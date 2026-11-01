@@ -1,0 +1,14 @@
+# Alocação contígua: fragmentação interna, externa e compactação
+format --block-size 1KB --blocks 16 --alloc contiguous
+create /a.dat --size 3KB
+create /b.dat --size 2500
+create /c.dat --size 2KB
+create /d.dat --size 1500
+# remover b.dat abre um "buraco" no meio do disco
+rm /b.dat
+fs_status --details
+# 8 blocos livres no total, mas a maior região contígua tem só 5: não cabe
+create /grande.dat --size 6KB
+compact
+create /grande.dat --size 6KB
+fs_status

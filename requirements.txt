@@ -1,0 +1,1 @@
+# O simulador usa apenas a biblioteca padrão do Python (3.9+). Nenhuma dependência externa.

@@ -1,0 +1,14 @@
+# Alocação encadeada (FAT) e caminhos relativos
+format --block-size 1KB --blocks 16 --alloc linked
+mkdir -p /home/user/docs
+cd /home/user
+create docs/nota.txt --content "ola mundo"
+create ../relatorio.bin --size 3000
+ls -l docs
+cat docs/nota.txt
+append docs/nota.txt " - mais texto"
+cat docs/nota.txt
+fs_status --details
+# troca de estratégia sem perder os arquivos
+set_alloc indexed
+fs_status --details
