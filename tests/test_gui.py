@@ -88,3 +88,17 @@ def test_format(app):
     app.new_folder("x")
     assert app.format_disk("512B", "16", "linked")
     assert app.fs.disk.total_blocks == 16 and not app.fs.root.children
+
+
+def test_storage_switch_and_raid_controls(app):
+    app.new_file("dados", "", "conteudo")
+    assert app.configure_storage("ssd")
+    assert app.fs.read("/dados") == b"conteudo"
+    assert app.configure_storage("raid", raid_level=5, disks=3)
+    assert app.raid_action("fail", 2)
+    assert app.fs.read("/dados") == b"conteudo"
+    assert app.raid_action("rebuild", 2)
+    assert app.flush_io()
+    app.show_storage()
+    app.update()
+    assert "RAID 5" in app.diag.get("1.0", "end")

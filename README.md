@@ -1,6 +1,6 @@
 # Simulador de Sistema Operacional Modular
 
-Projeto em 5 etapas incrementais. Este repositório contém a **Etapa 1: Sistema de Arquivos e Diagnóstico de Disco**.
+Projeto em etapas incrementais. Este repositório contém a **Etapa 1: Sistema de Arquivos e Diagnóstico de Disco** e a **Etapa 2: E/S, Escalonamento, SSD e RAID**.
 
 - **Linguagem:** Python 3.9+ (somente biblioteca padrão, sem dependências)
 - **Interfaces:** shell interativo (REPL), scripts de comandos e **interface gráfica (Tkinter) estilo Windows Explorer**
@@ -153,3 +153,102 @@ os-simulator/
 ## Próximas etapas
 
 A separação em módulos (`Disk` -> `AllocationStrategy` -> `FileSystem` -> `Shell`) foi pensada para que as etapas seguintes (processos, memória virtual e segurança) se encaixem como novas camadas sem reescrever o sistema de arquivos.
+
+## Etapa 2 — Gerenciamento de armazenamento
+
+A árvore de arquivos e as estratégias Contígua, Encadeada e Indexada continuam sobre o mesmo `Disk` lógico. Abaixo dele, `osim/storage.py` implementa dispositivos físicos e `osim/scheduling.py` implementa as políticas de escalonamento. Nenhuma dependência de execução foi adicionada.
+
+```text
+Shell / GUI -> FileSystem -> AllocationStrategy -> Disk lógico
+                                                   |
+                                          HDD / SSD / RAIDArray
+                                                   |
+                                     filas de E/S dos discos físicos
+```
+
+### Executar e demonstrar
+
+```bash
+python main.py --script examples/04_escalonamento.txt --blocks 200
+python main.py --script examples/05_raid5.txt
+python main.py --script examples/06_ssd.txt
+
+python main.py --device hdd --scheduler scan --head 53 --tracks 200 --direction up
+python main.py --device raid --raid-level 5 --disks 3 --blocks 32
+python gui.py --device ssd
+```
+
+As opções `--device`, `--raid-level`, `--disks`, `--scheduler`, `--head`, `--tracks` e `--direction` estão disponíveis nos dois pontos de entrada. Na GUI, use **Disco > Armazenamento, E/S e RAID...** para migrar os arquivos, consultar/atender filas, demonstrar os algoritmos, falhar discos e reconstruí-los. O painel de diagnóstico também mostra dispositivo e número de requisições pendentes.
+
+### Integração real com as operações de arquivo
+
+`create`, `write`, `write_file`, `append`, `resize`, `cp`, `cat` e `read_file` passam pelo dispositivo físico. Cada bloco de conteúdo gera E/S; i-nodes e diretórios geram escritas de metadados (reservados, sem serialização de uma estrutura binária). Leituras de arquivos indexados também consultam seu i-node. A fila identifica operação, bloco físico e caminho do arquivo. Em HDD, a trilha é `bloco físico % número de trilhas`, uma geometria didática explícita, com uma cabeça independente por disco RAID.
+
+```text
+mkdir -p /sistema/logs
+write_file /sistema/logs/app.log "Novo Registro"
+io_status
+io_flush
+read_file /sistema/logs/app.log
+```
+
+As escritas ficam na fila até o atendimento. `io_flush` executa as operações na ordem da política escolhida e soma o deslocamento da cabeça. Leituras atendem as escritas anteriores antes de devolver bytes; escritas repetidas no mesmo endereço também criam uma barreira para preservar a ordem dos dados. Checkpoints transacionais e operações RAID de leitura/modificação/escrita podem atender a fila automaticamente. `io_status` mostra pendências, último percurso e as dez operações mais recentes por dispositivo; `storage_status` atende as filas e mostra o estado físico. A saída do programa atende as escritas restantes.
+
+`disk_config` migra os arquivos existentes entre HDD, SSD e RAID sem alterar seus blocos lógicos. Falhas de alocação ou de migração preservam o estado anterior. Compactação e troca de estratégia incluem o armazenamento físico no rollback. `format`, no shell e na GUI, apaga os arquivos e recria um HDD; use `disk_config` para selecionar outro dispositivo após formatar.
+
+### Escalonamento do braço
+
+Políticas implementadas com Strategy Pattern: **FCFS**, **SSTF**, **SCAN** e **C-SCAN**. SSTF desempata pela ordem de chegada. SCAN/C-SCAN aceitam direção `up` ou `down`; trilhas válidas vão de zero a `--tracks - 1`. O percurso inclui o extremo quando necessário para alcançar pedidos do outro lado. C-SCAN contabiliza também o movimento de retorno entre extremos. O atendimento para quando a última requisição é concluída, sem deslocamento ocioso adicional.
+
+`disk_schedule` demonstra uma fila independente; use `disk_config hdd --algorithm ...` para escolher a política da E/S real.
+
+```text
+disk_schedule 98 183 37 122 14 --head 53 --algorithm sstf
+```
+
+```text
+--- ESCALONAMENTO DE DISCO: SSTF ---
+Ordem de Atendimento : 53 -> 37 -> 14 -> 98 -> 122 -> 183
+Deslocamento da Cabeça: |53-37| + |37-14| + |14-98| + |98-122| + |122-183|
+Total de Movimento  : 16 + 23 + 84 + 24 + 61 = 208 trilhas
+```
+
+### SSD: páginas, coleta de lixo e desgaste
+
+`disk_config ssd` habilita uma FTL: um bloco lógico corresponde a uma página, e cada bloco de apagamento contém quatro páginas. As atualizações usam escrita fora do lugar: a página anterior fica inválida e o mapeamento passa a apontar para uma página física nova. O wear leveling dinâmico prioriza blocos menos apagados e páginas menos programadas. A coleta de lixo copia páginas válidas antes de apagar o bloco escolhido. A reserva física é de 100% da capacidade lógica, arredondada para blocos de apagamento, mais um bloco de reserva.
+
+`storage_status` exibe mapeamento lógico/físico, programações por página, apagamentos por bloco e quantidade de coletas de lixo. O atendimento usa FCFS e o deslocamento é zero, pois não existe braço mecânico. O modelo não simula tempo elétrico, limite de vida útil nem wear leveling estático de dados frios. O exemplo `06_ssd.txt` permite acompanhar a troca de páginas e a coleta de lixo ao sobrescrever o mesmo arquivo.
+
+### RAID: distribuição, falha e reconstrução
+
+| Nível | Discos mínimos | Distribuição | Tolerância |
+|---|---:|---|---|
+| RAID 0 | 2 | Striping de dados | Nenhuma falha |
+| RAID 1 | 2 | Cópia completa em cada membro | Todos menos um membro |
+| RAID 4 | 3 | Dados em stripes; último disco guarda paridade XOR | Uma falha |
+| RAID 5 | 3 | Dados em stripes; paridade XOR rotativa | Uma falha |
+
+Cada unidade de stripe tem um bloco lógico. `--blocks` indica a capacidade **lógica útil**; os discos físicos são dimensionados conforme o nível. Uma stripe final incompleta usa zeros nas posições sem dados. No RAID 5, a paridade começa no último disco e gira para trás a cada stripe. Metadados e conteúdos usam o mesmo arranjo, portanto um arquivo pode começar no meio de uma stripe ou atravessar várias delas.
+
+```text
+disk_config raid --level 5 --disks 3
+mkdir /dados
+write_file /dados/planilha.csv --size 8KB
+storage_status
+fail_disk 2
+read_file /dados/planilha.csv
+rebuild_disk 2
+```
+
+RAID 4/5 calcula a paridade **sobre bytes reais**, não somente rótulos: `paridade = XOR(dados)`. A atualização usa leitura/modificação/escrita; com um disco falho, o arranjo continua lendo e gravando. Um bloco ausente é recuperado por `XOR` dos demais membros da stripe; `storage_status` registra as recuperações. `rebuild_disk` reconstrói todos os blocos em um substituto e só o ativa quando termina. RAID 1 lê de um espelho saudável e o usa para reconstrução. RAID 0 recusa operações após falha; RAID 4/5 recusa operações com duas falhas.
+
+`--size 8KB` preenche o conteúdo com zeros, como na Etapa 1. O exemplo `05_raid5.txt` inclui também texto não zerado e uma atualização durante a falha. Os testes removem os bytes do membro falho para verificar que a recuperação usa os outros discos. Toda a simulação permanece em memória, sem persistência entre execuções.
+
+### Testes da Etapa 2
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+`tests/test_storage.py` cobre o resultado SSTF de 208 trilhas, as quatro políticas e seus extremos, despacho efetivo da fila, dependências de leitura/escrita, integração com as três alocações, paridade, falha de cada membro, escrita degradada, reconstrução, tolerância excedida, rollback, migração e preservação de dados durante coleta de lixo do SSD. `tests/test_gui.py` também cobre os controles de SSD/RAID e a janela de armazenamento, quando há display.

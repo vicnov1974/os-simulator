@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Simulador de Sistema Operacional Modular - Etapa 1 (Sistema de Arquivos e Disco)."""
+"""Simulador de SO - Sistema de Arquivos e Gerenciamento de Armazenamento."""
 import argparse
 import os
 import sys
 
 from osim.allocation import STRATEGIES, make_strategy
-from osim.disk import Disk
+from osim.disk import Disk, DiskError
 from osim.filesystem import FileSystem
 from osim.shell import Shell
 from osim.utils import parse_size
+from osim.storage import add_storage_arguments, storage_from_args
 
-BANNER = "Simulador de SO - Etapa 1: Sistema de Arquivos e Disco  (digite 'help')"
+BANNER = "Simulador de SO - Etapas 1 e 2: Arquivos, E/S e Armazenamento  (digite 'help')"
 
 
 def main() -> int:
@@ -21,10 +22,15 @@ def main() -> int:
                     help="estratégia de alocação inicial (padrão: indexed)")
     ap.add_argument("--script", metavar="ARQUIVO", help="executa comandos de um arquivo")
     ap.add_argument("--no-color", action="store_true", help="desativa cores ANSI")
+    add_storage_arguments(ap)
     args = ap.parse_args()
 
     color = sys.stdout.isatty() and not args.no_color and "NO_COLOR" not in os.environ
-    fs = FileSystem(Disk(parse_size(args.block_size), args.blocks), make_strategy(args.alloc))
+    try:
+        bs = parse_size(args.block_size)
+        fs = FileSystem(Disk(bs, args.blocks, storage_from_args(args, bs)), make_strategy(args.alloc))
+    except (ValueError, DiskError) as exc:
+        ap.error(str(exc))
     shell = Shell(fs, color=color)
 
     if args.script:                      # modo script: ecoa cada comando
@@ -40,6 +46,7 @@ def main() -> int:
                 if not shell.execute(line):
                     break
                 print()
+        shell.fs.disk.flush()
         return 0
 
     try:
@@ -55,6 +62,7 @@ def main() -> int:
             break
         if not shell.execute(line):
             break
+    shell.fs.disk.flush()
     return 0
 
 

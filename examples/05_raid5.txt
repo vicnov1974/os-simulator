@@ -1,0 +1,17 @@
+# Etapa 2 - execute: python main.py --script examples/05_raid5.txt
+disk_config raid --level 5 --disks 3
+mkdir /dados
+write_file /dados/planilha.csv --size 8KB
+storage_status
+# Payload não zerado permite observar bytes reais e validar XOR.
+write_file /dados/registro.txt "Novo Registro - dados recuperaveis"
+storage_status
+fail_disk 2
+read_file /dados/registro.txt
+read_file /dados/planilha.csv
+storage_status
+# Escrita em modo degradado e reconstrução em disco substituto.
+append /dados/registro.txt " - gravado durante a falha"
+rebuild_disk 2
+read_file /dados/registro.txt
+storage_status
