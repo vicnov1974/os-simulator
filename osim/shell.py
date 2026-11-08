@@ -7,6 +7,8 @@ from .allocation import STRATEGIES, make_strategy
 from .disk import Disk, DiskError
 from .filesystem import FileSystem, FSError
 from .utils import format_size, parse_size
+from .scheduling import schedule, render_schedule
+from .storage import RAIDArray, render_io, render_storage
 
 HELP = """\
 COMANDOS (caminhos absolutos '/a/b' ou relativos 'a/b', './a', '../a')
@@ -40,6 +42,19 @@ COMANDOS (caminhos absolutos '/a/b' ou relativos 'a/b', './a', '../a')
                               recria o disco (APAGA tudo)
 
  Outros
+  write_file <arq> <texto> | write_file <arq> --size 8KB
+  read_file <arq>             aliases para escrita/leitura
+  disk_config <hdd|ssd|raid> [--level 5] [--disks 3]
+               [--algorithm sstf] [--tracks 200] [--head 53] [--direction up]
+                              migra arquivos para o dispositivo escolhido
+  disk_schedule <trilhas...> [--algorithm sstf] [--head 53]
+               [--tracks 200] [--direction up|down]
+                              demonstra uma fila independente (não altera arquivos)
+  io_status | io_flush        consulta/atende a fila física real
+  storage_status              distribuição RAID ou páginas/desgaste SSD (atende E/S)
+  fail_disk <n>               falha de disco RAID (numeração começa em 1)
+  rebuild_disk <n>            reconstrói disco RAID usando espelho ou XOR
+
   help                        esta ajuda
   exit | quit                 sai
 """
@@ -97,6 +112,11 @@ class Shell:
             "mv": self.c_mv, "cp": self.c_cp, "rm": self.c_rm, "rmdir": self.c_rmdir,
             "fs_status": self.c_status, "compact": self.c_compact,
             "set_alloc": self.c_set_alloc, "format": self.c_format,
+            "write_file": self.c_write_file, "read_file": self.c_cat,
+            "disk_config": self.c_disk_config, "disk_schedule": self.c_disk_schedule,
+            "io_status": self.c_io_status, "io_flush": self.c_io_flush,
+            "storage_status": self.c_storage_status,
+            "fail_disk": self.c_fail_disk, "rebuild_disk": self.c_rebuild_disk,
         }
 
     @property
@@ -238,6 +258,82 @@ class Shell:
             self.fs.remove(p, only_dir=True)
 
     # ---- disco -----------------------------------------------------------
+    def c_write_file(self, args):
+        pos, opts = parse_opts(args, valued=("--size",))
+        if not pos or (len(pos) < 2 and "--size" not in opts):
+            raise FSError("uso: write_file <arq> <texto> | write_file <arq> --size 8KB")
+        data = _text(pos[1:])
+        if "--size" in opts:
+            size = _size(opts["--size"])
+            data = data[:size].ljust(size, b"\0")
+        node = self.fs.write(pos[0], data)
+        print(f"'{node.path()}' atualizado: {node.size} bytes, blocos {node.blocks}")
+        print(render_io(self.fs.disk.storage))
+
+    def c_disk_config(self, args):
+        pos, opts = parse_opts(args, valued=("--level", "--disks", "--algorithm",
+                                            "--tracks", "--head", "--direction"))
+        if len(pos) != 1:
+            raise FSError("uso: disk_config <hdd|ssd|raid> [--level 5] [--disks 3] [--algorithm sstf]")
+        try:
+            self.fs.disk.configure_storage(
+                pos[0], raid_level=int(opts.get("--level", 5)), disks=int(opts.get("--disks", 3)),
+                algorithm=opts.get("--algorithm", "sstf"), tracks=int(opts.get("--tracks", 200)),
+                head=int(opts.get("--head", 53)), direction=opts.get("--direction", "up"))
+        except ValueError as exc:
+            raise FSError(str(exc))
+        print("Dispositivo configurado; arquivos preservados.")
+        print(render_storage(self.fs.disk.storage))
+
+    def c_disk_schedule(self, args):
+        pos, opts = parse_opts(args, valued=("--algorithm", "--head", "--tracks", "--direction"))
+        try:
+            tracks = [int(t) for part in pos for t in part.split(",")]
+            result = schedule(tracks, int(opts.get("--head", 53)), opts.get("--algorithm", "sstf"),
+                              int(opts.get("--tracks", 200)), opts.get("--direction", "up"))
+        except ValueError as exc:
+            raise FSError(str(exc))
+        print(f"[E/S] Requisições nas trilhas: {tracks}")
+        print(render_schedule(result))
+
+    def c_io_status(self, args):
+        if args:
+            raise FSError("uso: io_status")
+        print(render_io(self.fs.disk.storage))
+
+    def c_io_flush(self, args):
+        if args:
+            raise FSError("uso: io_flush")
+        self.fs.disk.flush()
+        print(render_io(self.fs.disk.storage))
+
+    def c_storage_status(self, args):
+        if args:
+            raise FSError("uso: storage_status")
+        self.fs.disk.flush()
+        print(render_storage(self.fs.disk.storage))
+
+    def _raid(self, args):
+        storage = self.fs.disk.storage
+        if not isinstance(storage, RAIDArray):
+            raise FSError("configure um arranjo com disk_config raid")
+        if len(args) != 1:
+            raise FSError("informe o número do disco físico (a partir de 1)")
+        try:
+            return storage, int(args[0])
+        except ValueError:
+            raise FSError("número de disco inválido")
+
+    def c_fail_disk(self, args):
+        storage, number = self._raid(args)
+        storage.fail(number)
+        print(f"Falha forçada no Disco {number}!")
+
+    def c_rebuild_disk(self, args):
+        storage, number = self._raid(args)
+        count = storage.rebuild(number)
+        print(f"Disco {number}: {count} blocos reconstruídos [OK]")
+
     def c_status(self, args):
         _, opts = parse_opts(args, flags=("--details", "-d"))
         print(report.render_status(self.fs, details=bool(opts), color=self.color))

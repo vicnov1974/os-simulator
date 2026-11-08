@@ -1,0 +1,23 @@
+# Etapa 2 - execute: python main.py --script examples/06_ssd.txt
+format --blocks 8 --alloc linked
+disk_config ssd
+write_file /contador "valor 01"
+storage_status
+write_file /contador "valor 02"
+storage_status
+write_file /contador "valor 03"
+write_file /contador "valor 04"
+write_file /contador "valor 05"
+write_file /contador "valor 06"
+write_file /contador "valor 07"
+write_file /contador "valor 08"
+write_file /contador "valor 09"
+write_file /contador "valor 10"
+write_file /contador "valor 11"
+write_file /contador "valor 12"
+write_file /contador "valor 13"
+write_file /contador "valor 14"
+write_file /contador "valor 15"
+storage_status
+read_file /contador
+io_status

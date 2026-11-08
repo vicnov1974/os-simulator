@@ -165,19 +165,17 @@ class FileSystem:
             raise FSError(f"arquivo excede o limite do i-node ({limit} blocos = "
                           f"{limit * bs} bytes)")
         old = list(node.blocks)
-        old_data = [self.disk.read(b) for b in old]
-        for b in old:
-            self.disk.release(b)
+        snap = self.disk.checkpoint()
         try:
+            for b in old:
+                self.disk.release(b)
             new = self.strategy.choose(self.disk, n, old)
-        except NoSpaceError:                      # rollback: restaura estado anterior
-            for i, b in enumerate(old):
+            for i, b in enumerate(new):
                 self.disk.claim(b, node, "DATA", i)
-                self.disk.write(b, old_data[i])
+                self.disk.write(b, data[i * bs:(i + 1) * bs])
+        except Exception:                         # inclui falhas físicas e RAID
+            self.disk.restore(snap)
             raise
-        for i, b in enumerate(new):
-            self.disk.claim(b, node, "DATA", i)
-            self.disk.write(b, data[i * bs:(i + 1) * bs])
         node.blocks = new
         node.size = len(data)
 
@@ -220,12 +218,13 @@ class FileSystem:
         self._check_name(name)
         data = content if size is None else content[:size].ljust(size, b"\0")
         node = Node(name, parent, False)
+        snap = self.disk.checkpoint()
         try:
             if self.strategy.uses_file_inode:
                 self._alloc_meta(node, "FILE_INODE")
             self._store(node, data)
         except Exception:
-            self._free_node(node)
+            self.disk.restore(snap)
             raise
         parent.children[name] = node
         return node
@@ -237,6 +236,8 @@ class FileSystem:
         return node
 
     def read_node(self, node: Node) -> bytes:
+        if node.meta_block is not None:
+            self.disk.read(node.meta_block)
         return b"".join(self.disk.read(b) for b in node.blocks)[:node.size]
 
     def read(self, path: str) -> bytes:
@@ -329,12 +330,13 @@ class FileSystem:
     # Re-layout: compactação e troca de estratégia
     # ------------------------------------------------------------------
     def _snapshot(self, nodes):
-        return (list(self.disk.owner), dict(self.disk.raw),
+        return (self.disk.checkpoint(),
                 [(n, n.meta_block, list(n.blocks), n.size) for n in nodes], self.strategy)
 
     def _restore(self, snap):
-        owner, raw, node_state, strategy = snap
-        self.disk.owner, self.disk.raw, self.strategy = list(owner), dict(raw), strategy
+        disk_state, node_state, strategy = snap
+        self.disk.restore(disk_state)
+        self.strategy = strategy
         for n, meta, blocks, size in node_state:
             n.meta_block, n.blocks, n.size = meta, list(blocks), size
 

@@ -15,6 +15,8 @@ from .allocation import STRATEGIES, IndexedAllocation, make_strategy
 from .disk import Disk, DiskError
 from .filesystem import FileSystem, FSError
 from .utils import format_size, parse_size
+from .storage import RAIDArray, devices, render_io, render_storage
+from .scheduling import schedule, render_schedule
 
 FILE_COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#0fa3b1",
                "#d81b8c", "#7a9a01", "#469990", "#9a6324", "#800000", "#5c6bc0"]
@@ -75,7 +77,7 @@ class App(tk.Tk):
 
     def __init__(self, fs: FileSystem = None):
         super().__init__()
-        self.title("Simulador de SO - Etapa 1: Explorador de Arquivos")
+        self.title("Simulador de SO - Arquivos e Armazenamento")
         self.geometry("1200x800")
         self.minsize(950, 640)
         self.fs = fs or FileSystem(Disk(4096, 64), IndexedAllocation())
@@ -122,13 +124,13 @@ class App(tk.Tk):
         d = tk.Menu(m, tearoff=0)
         d.add_command(label="Compactar disco", command=self.compact)
         d.add_command(label="Relatório detalhado...", command=self.show_report)
+        d.add_command(label="Armazenamento, E/S e RAID...", command=self.show_storage)
         d.add_separator()
         d.add_command(label="Formatar disco...", command=self.ask_format)
         m.add_cascade(label="Disco", menu=d)
         h = tk.Menu(m, tearoff=0)
         h.add_command(label="Sobre", command=lambda: messagebox.showinfo(
-            "Sobre", "Simulador de SO Modular - Etapa 1\nSistema de arquivos e diagnóstico "
-                     "de disco.", parent=self))
+            "Sobre", "Simulador de SO Modular - Etapas 1 e 2\nArquivos, E/S, SSD e RAID.", parent=self))
         m.add_cascade(label="Ajuda", menu=h)
         self.config(menu=m)
 
@@ -488,6 +490,8 @@ class App(tk.Tk):
                  f"Alocação: {self.fs.strategy.title}",
                  f"Usados: {d.used_count} | Livres: {d.free_count}", "",
                  report.render_global_report(self.fs)]
+        lines += ["", f"Dispositivo: {'RAID ' + str(d.storage.level) if isinstance(d.storage, RAIDArray) else d.storage.kind.upper()}",
+                  f"E/S pendentes: {sum(len(member.pending) for member in devices(d.storage))}"]
         if self.highlight is not None and not self.highlight.is_dir:
             lines += ["", "--- ARQUIVO SELECIONADO ---",
                       report.render_file_report(self.fs, self.highlight)]
@@ -516,6 +520,98 @@ class App(tk.Tk):
         txt.pack(fill="both", expand=True)
         txt.insert("1.0", report.render_status(self.fs, details=True))
         txt.configure(state="disabled")
+
+    def configure_storage(self, kind, **options):
+        return self._try(self.fs.disk.configure_storage, kind, **options)
+
+    def flush_io(self):
+        return self._try(self.fs.disk.flush)
+
+    def raid_action(self, action, number):
+        storage = self.fs.disk.storage
+        if not isinstance(storage, RAIDArray):
+            self.show_error("Configure um arranjo RAID primeiro.")
+            return False
+        return self._try(getattr(storage, action), number)
+
+    def show_storage(self):
+        win = tk.Toplevel(self)
+        win.title("Armazenamento e atendimento de E/S")
+        win.geometry("1050x720")
+        config = ttk.Frame(win, padding=8)
+        config.pack(fill="x")
+        storage = self.fs.disk.storage
+        first = devices(storage)[0]
+        initial = {"Dispositivo": "raid" if isinstance(storage, RAIDArray) else storage.kind,
+                   "RAID": str(getattr(storage, "level", 5)), "Discos": str(max(3, len(devices(storage)))),
+                   "Política": first.algorithm, "Cabeça": str(first.head),
+                   "Trilhas": str(first.tracks), "Direção": first.direction}
+        choices = {"Dispositivo": ("hdd", "ssd", "raid"), "RAID": ("0", "1", "4", "5"),
+                   "Política": ("fcfs", "sstf", "scan", "c-scan"), "Direção": ("up", "down")}
+        values = {}
+        for col, (label, default) in enumerate(initial.items()):
+            ttk.Label(config, text=label).grid(row=0, column=col, padx=3)
+            var = values[label] = tk.StringVar(value=default)
+            if label in choices:
+                widget = ttk.Combobox(config, textvariable=var, values=choices[label], width=11, state="readonly")
+            else:
+                widget = ttk.Entry(config, textvariable=var, width=8)
+            widget.grid(row=1, column=col, padx=3)
+        ttk.Label(win, text="Aplicar migra os arquivos. SSD usa páginas e FCFS, sem cabeça mecânica.").pack(anchor="w", padx=8)
+        actions = ttk.Frame(win, padding=8)
+        actions.pack(fill="x")
+        txt = tk.Text(win, wrap="none", font="TkFixedFont")
+        scroll = ttk.Scrollbar(win, command=txt.yview)
+        txt.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        txt.pack(fill="both", expand=True, padx=8, pady=8)
+
+        def show(extra=""):
+            txt.configure(state="normal")
+            txt.delete("1.0", "end")
+            txt.insert("1.0", extra + render_io(self.fs.disk.storage) + "\n\n" + render_storage(self.fs.disk.storage))
+            txt.configure(state="disabled")
+
+        def apply():
+            try:
+                options = dict(raid_level=int(values["RAID"].get()), disks=int(values["Discos"].get()),
+                               algorithm=values["Política"].get(), head=int(values["Cabeça"].get()),
+                               tracks=int(values["Trilhas"].get()), direction=values["Direção"].get())
+            except ValueError:
+                self.show_error("Discos, cabeça e trilhas devem ser números inteiros.")
+                return
+            self.configure_storage(values["Dispositivo"].get(), **options)
+            show()
+
+        def flush():
+            self.flush_io()
+            show()
+
+        def raid(action):
+            number = simpledialog.askinteger("Disco físico", "Número do disco (a partir de 1):", parent=win)
+            if number is not None:
+                self.raid_action(action, number)
+                show()
+
+        def demonstrate():
+            text = simpledialog.askstring("Fila independente", "Trilhas separadas por vírgula:",
+                                          initialvalue="98,183,37,122,14", parent=win)
+            if text is None:
+                return
+            try:
+                result = schedule([int(t) for t in text.replace(",", " ").split()],
+                                  int(values["Cabeça"].get()), values["Política"].get(),
+                                  int(values["Trilhas"].get()), values["Direção"].get())
+                show(render_schedule(result) + "\n\n")
+            except (ValueError, DiskError) as exc:
+                self.show_error(str(exc))
+
+        for label, command in (("Aplicar configuração", apply), ("Atualizar", show),
+                               ("Atender fila", flush), ("Demonstrar escalonamento", demonstrate),
+                               ("Falhar disco", lambda: raid("fail")),
+                               ("Reconstruir disco", lambda: raid("rebuild"))):
+            ttk.Button(actions, text=label, command=command).pack(side="left", padx=2)
+        show()
 
     def show_properties(self):
         n = self.selected_node()
@@ -631,7 +727,11 @@ class App(tk.Tk):
             self.set_strategy(key)
 
     def open_editor(self, node):
-        data = self.fs.read_node(node)
+        try:
+            data = self.fs.read_node(node)
+        except (FSError, DiskError) as exc:
+            self.show_error(str(exc))
+            return
         binary = b"\0" in data
         win = tk.Toplevel(self)
         win.title(f"Editar - {node.path()}")
@@ -654,4 +754,8 @@ class App(tk.Tk):
 
 
 def run(fs: FileSystem = None) -> None:
-    App(fs).mainloop()
+    app = App(fs)
+    try:
+        app.mainloop()
+    finally:
+        app.fs.disk.flush()
