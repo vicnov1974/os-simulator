@@ -102,3 +102,29 @@ def test_storage_switch_and_raid_controls(app):
     app.show_storage()
     app.update()
     assert "RAID 5" in app.diag.get("1.0", "end")
+
+
+def test_session_switch_closes_privileged_windows_and_hides_restricted_paths(app):
+    app.fs.security.set_password("root", "root-test")
+    app.fs.security.add_user("carlos", "users", "carlos-test")
+    app.fs.mkdir("/restrito/subpasta", parents=True)
+    app.fs.write("/restrito/subpasta/sigilo", b"privado")
+    app.fs.chmod("/restrito", "700")
+    app.open_editor(app.fs.resolve("/restrito/subpasta/sigilo"))
+    app.show_storage()
+    old_windows = tuple(app.session_windows)
+
+    assert app.login("carlos", "carlos-test")
+    app.update()
+    assert all(not win.winfo_exists() for win in old_windows)
+    assert not app.tree.exists("/restrito/subpasta")
+    assert "MODO_USUARIO" in app.status.get()
+    assert not app.navigate("/restrito")
+    assert not app.format_disk("512B", "16", "linked")
+    app.show_storage()
+    assert not app.session_windows and "MODO_KERNEL" in app.errors[-1]
+    app.logout()
+    assert not rows(app)
+    assert app.login("root", "root-test")
+    assert app.navigate("/restrito/subpasta")
+    assert rows(app) == ["sigilo"]

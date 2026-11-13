@@ -82,7 +82,7 @@ class HDD:
                 self.labels[request.block] = request.label
             else:
                 request.result = self._read(request.block)
-            self.history.append(request)
+            self.history.append(IORequest(request.operation, request.block, request.track, request.label))
         self.pending.clear()
         self.head = plan.path[-1]
         if self.algorithm == "scan" and len(plan.path) > 1:
@@ -168,7 +168,7 @@ class SSD(HDD):
                 self.labels[request.block] = request.label
             else:
                 request.result = self._read(request.block)
-            self.history.append(request)
+            self.history.append(IORequest(request.operation, request.block, request.track, request.label))
         self.pending.clear()
         return None
 
@@ -254,6 +254,26 @@ class RAIDArray:
                 self.members[parity].write(row, new_parity, label + " [PARIDADE XOR]")
             if not self.members[target].failed:
                 self.members[target].write(row, padded, label)
+
+    def inconsistent_rows(self, rows):
+        """Verifica a redundância física das stripes que podem ser comparadas."""
+        if self.level == 0:
+            return
+        available = [member for member in self.members if not member.failed]
+        if self.level in (4, 5) and len(available) != len(self.members):
+            return
+        if len(available) < 2:
+            return
+        for row in sorted(rows):
+            parts = [member.read(row, "[auditoria RAID]") for member in available]
+            if any(len(part) != self.block_size for part in parts):
+                consistent = False
+            elif self.level == 1:
+                consistent = all(part == parts[0] for part in parts[1:])
+            else:
+                consistent = not any(xor_blocks(parts, self.block_size))
+            if not consistent:
+                yield row
 
     def fail(self, number):
         self._member(number)

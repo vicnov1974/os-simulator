@@ -250,9 +250,16 @@ def test_documented_example_scripts(example):
                             cwd=root, capture_output=True, encoding="utf-8",
                             env=dict(os.environ, PYTHONIOENCODING="utf-8"), timeout=30)
     assert result.returncode == 0, result.stderr
-    # A demonstração de fragmentação da Etapa 1 inclui uma falha intencional.
+    # As demonstrações de fragmentação e ACL incluem uma falha intencional.
     if example.name.startswith("02_"):
         assert "Erro: fragmentação externa" in result.stdout
+    elif example.name.startswith("07_"):
+        assert result.stdout.count("Erro:") == 1
+        assert "[NEGADO]" in result.stdout and "rwxr-x--- (750)" in result.stdout
+        assert "Criptografado e Íntegro" in result.stdout
+        assert "Hash do bloco" in result.stdout and "Assinatura maliciosa" in result.stdout
+        assert "Registro privado" in result.stdout
+        assert all(secret not in result.stdout for secret in ("raiz-demo", "carlos-demo", "MinhaChave123"))
     else:
         assert "Erro:" not in result.stdout
     if example.name.startswith("04_"):

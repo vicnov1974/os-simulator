@@ -7,11 +7,11 @@ import sys
 from osim.allocation import STRATEGIES, make_strategy
 from osim.disk import Disk, DiskError
 from osim.filesystem import FileSystem
-from osim.shell import Shell
+from osim.shell import Shell, has_inline_secret
 from osim.utils import parse_size
 from osim.storage import add_storage_arguments, storage_from_args
 
-BANNER = "Simulador de SO - Etapas 1 e 2: Arquivos, E/S e Armazenamento  (digite 'help')"
+BANNER = "Simulador de SO - Etapas 1 a 3: Arquivos, Armazenamento e Segurança  (digite 'help')"
 
 
 def main() -> int:
@@ -42,7 +42,8 @@ def main() -> int:
                 if line.startswith("#"):
                     print(line)
                     continue
-                print(f"{shell.prompt}{line}")
+                shown = "[comando com credencial omitido]" if has_inline_secret(line) else line
+                print(f"{shell.prompt}{shown}")
                 if not shell.execute(line):
                     break
                 print()
@@ -50,9 +51,9 @@ def main() -> int:
         return 0
 
     try:
-        import readline  # noqa: F401  (histórico/setas no Linux e macOS)
+        import readline
     except ImportError:
-        pass
+        readline = None
     print(BANNER)
     while True:
         try:
@@ -60,6 +61,10 @@ def main() -> int:
         except (EOFError, KeyboardInterrupt):
             print()
             break
+        if readline and has_inline_secret(line) and readline.get_current_history_length():
+            last = readline.get_current_history_length()
+            if readline.get_history_item(last) == line:
+                readline.remove_history_item(last - 1)
         if not shell.execute(line):
             break
     shell.fs.disk.flush()

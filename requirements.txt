@@ -1,1 +1,2 @@
-# O simulador usa apenas a biblioteca padrão do Python (3.9+). Nenhuma dependência externa.
+# Criptografia autenticada da Etapa 3 (AES-GCM).
+cryptography>=42

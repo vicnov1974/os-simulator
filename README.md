@@ -1,8 +1,8 @@
 # Simulador de Sistema Operacional Modular
 
-Projeto em etapas incrementais. Este repositório contém a **Etapa 1: Sistema de Arquivos e Diagnóstico de Disco** e a **Etapa 2: E/S, Escalonamento, SSD e RAID**.
+Projeto em etapas incrementais. Inclui o sistema de arquivos da **Etapa 1**, o gerenciamento de armazenamento da **Etapa 2** e os controles de segurança da **Etapa 3**.
 
-- **Linguagem:** Python 3.9+ (somente biblioteca padrão, sem dependências)
+- **Linguagem:** Python 3.9+ com `cryptography` para criptografia autenticada.
 - **Interfaces:** shell interativo (REPL), scripts de comandos e **interface gráfica (Tkinter) estilo Windows Explorer**
 
 ## Como executar
@@ -10,6 +10,7 @@ Projeto em etapas incrementais. Este repositório contém a **Etapa 1: Sistema d
 ```bash
 git clone <URL-DO-SEU-REPOSITORIO>
 cd os-simulator
+python -m pip install -r requirements.txt
 
 python main.py                                   # shell interativo (disco de 16 x 4 KB, indexado)
 python main.py --alloc contiguous --block-size 1KB --blocks 32
@@ -152,11 +153,11 @@ os-simulator/
 
 ## Próximas etapas
 
-A separação em módulos (`Disk` -> `AllocationStrategy` -> `FileSystem` -> `Shell`) foi pensada para que as etapas seguintes (processos, memória virtual e segurança) se encaixem como novas camadas sem reescrever o sistema de arquivos.
+A separação em módulos (`Disk` -> `AllocationStrategy` -> `FileSystem` -> `Shell`) permite adicionar as etapas seguintes sem reescrever o sistema de arquivos.
 
 ## Etapa 2 — Gerenciamento de armazenamento
 
-A árvore de arquivos e as estratégias Contígua, Encadeada e Indexada continuam sobre o mesmo `Disk` lógico. Abaixo dele, `osim/storage.py` implementa dispositivos físicos e `osim/scheduling.py` implementa as políticas de escalonamento. Nenhuma dependência de execução foi adicionada.
+A árvore de arquivos e as estratégias Contígua, Encadeada e Indexada continuam sobre o mesmo `Disk` lógico. Abaixo dele, `osim/storage.py` implementa dispositivos físicos e `osim/scheduling.py` implementa as políticas de escalonamento.
 
 ```text
 Shell / GUI -> FileSystem -> AllocationStrategy -> Disk lógico
@@ -252,3 +253,38 @@ python -m pytest -q
 ```
 
 `tests/test_storage.py` cobre o resultado SSTF de 208 trilhas, as quatro políticas e seus extremos, despacho efetivo da fila, dependências de leitura/escrita, integração com as três alocações, paridade, falha de cada membro, escrita degradada, reconstrução, tolerância excedida, rollback, migração e preservação de dados durante coleta de lixo do SSD. `tests/test_gui.py` também cobre os controles de SSD/RAID e a janela de armazenamento, quando há display.
+
+## Etapa 3 — Identidade, proteção de dados e integridade
+
+```bash
+python main.py --script examples/07_seguranca.txt
+```
+
+O exemplo cria o grupo `devs` e o usuário `carlos`, demonstra o bloqueio de leitura de um arquivo `750`, grava um arquivo criptografado e executa a varredura após uma alteração simulada. As credenciais do exemplo são fictícias.
+
+### Sessões e permissões
+
+Cada simulação inicia em `MODO_KERNEL` como `root` para permitir a configuração do disco e a execução dos exemplos anteriores. Use `passwd root` antes de trocar de usuário para poder retornar ao modo kernel com a senha escolhida. `logout` encerra a sessão e o acesso ao sistema de arquivos até o próximo `login`. Usuários, grupos, ACLs, hashes de integridade e logs fazem parte do estado em memória da simulação. A formatação preserva as contas e a auditoria da sessão.
+
+| Comando | Efeito |
+|---|---|
+| `groupadd devs` e `useradd carlos --group devs` | Cadastram grupo e usuário. O cadastro solicita a senha em entrada oculta. |
+| `login --user carlos`, `whoami`, `logout` | Autentica, mostra identidade e modo ou encerra a sessão. |
+| `passwd [usuário]` e `usermod carlos --group devs` | Define senha ou adiciona associação a um grupo. |
+| `chmod 750 /sistema/config.sys` | Define permissões em octal. Também aceita `rwxr-x---`. |
+| `chown carlos:devs /home/carlos` | Transfere propriedade a um usuário e grupo cadastrados. |
+| `exec_file <arquivo>` | Verifica a permissão de execução simulada. |
+| `audit_log` | Exibe eventos de autenticação, acessos negados, ações administrativas e alertas. |
+
+Arquivos novos recebem modo `644` e diretórios recebem `755`. O proprietário é o usuário que cria o objeto e o grupo é seu grupo principal. A verificação usa a classe de proprietário, de grupo (principal ou suplementar) ou de outros. Diretórios exigem `x` para travessia, `rx` para listagem e `wx` para alterações nas entradas. A remoção recursiva também verifica as permissões nos diretórios do ramo. O proprietário ou root pode usar `chmod`. Os comandos administrativos de usuários, armazenamento, RAID, formatação, compactação, auditoria e varredura exigem `MODO_KERNEL`. Senhas são verificadas por PBKDF2-HMAC-SHA256 com 600.000 iterações e salt individual aleatório.
+
+### Criptografia e auditoria
+
+- `encrypt_file <arquivo>` solicita a chave e grava o conteúdo com AES-256-GCM. `decrypt_file <arquivo>` restaura a forma legível com a chave correta. `create` e `write_file` aceitam `--ask-key` para criar um arquivo já criptografado.
+- Use `read_file <arquivo> --ask-key` para leitura. `write`, `write_file`, `append` e `resize` aceitam a mesma opção para gravar com criptografia ou atualizar um arquivo já criptografado. O conteúdo físico inclui 16 bytes de autenticação, contabilizados na alocação. A derivação da chave usa salt por arquivo e as regravações usam nonce novo. A chave de acesso é informada a cada operação.
+- `antivirus_scan /` compara os hashes SHA-256 registrados na gravação com os blocos lidos do dispositivo, incluindo o preenchimento. Verifica também os metadados físicos e, quando há discos suficientes para comparação, a consistência de espelhos e paridade nas stripes inspecionadas. Em texto legível procura assinaturas de teste. Para arquivos criptografados, a varredura verifica a integridade do conteúdo cifrado.
+- `corrupt_block <arquivo> [índice]` altera um bloco sem atualizar seu registro de integridade. O comando permite demonstrar o alerta sem modificar arquivos do computador.
+
+Os argumentos `--password` e `--key` permitem automatizar exemplos com credenciais fictícias. Prefira a entrada oculta ao usar uma senha ou chave pessoal. A criptografia protege o conteúdo gravado no dispositivo simulado. Converter um arquivo existente não é uma operação de apagamento seguro das páginas antigas de um SSD.
+
+Na GUI, o menu **Segurança** oferece autenticação, cadastro, ACL, criptografia, varredura e auditoria. Selecione um arquivo para alterar permissões ou criptografia. Ao abrir um arquivo criptografado, informe a chave no diálogo.

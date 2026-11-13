@@ -1,0 +1,22 @@
+# Execute: python main.py --script examples/07_seguranca.txt
+# Senhas e chaves abaixo são fictícias e servem apenas para a demonstração.
+passwd root --password "raiz-demo"
+groupadd devs
+useradd carlos --group devs --password "carlos-demo"
+mkdir -p /sistema/logs
+write /sistema/config.sys "Configuração restrita"
+chmod 750 /sistema/config.sys
+write /sistema/logs/app.log "Registro original"
+write /sistema/logs/teste.txt "OSIM_TEST_MALWARE"
+mkdir -p /home/carlos
+chown carlos:devs /home/carlos
+chmod 700 /home/carlos
+login --user carlos --password "carlos-demo"
+read_file /sistema/config.sys
+write_file /home/carlos/segredo.txt "Registro privado"
+encrypt_file /home/carlos/segredo.txt --key "MinhaChave123"
+read_file /home/carlos/segredo.txt --key "MinhaChave123"
+login --user root --password "raiz-demo"
+corrupt_block /sistema/logs/app.log
+antivirus_scan /
+audit_log
