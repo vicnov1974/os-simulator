@@ -17,6 +17,7 @@ from .filesystem import FileSystem, FSError
 from .utils import format_size, parse_size
 from .storage import RAIDArray, devices, render_io, render_storage
 from .scheduling import schedule, render_schedule
+from .security import SecurityError, describe_acl, render_scan
 
 FILE_COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#0fa3b1",
                "#d81b8c", "#7a9a01", "#469990", "#9a6324", "#800000", "#5c6bc0"]
@@ -77,11 +78,12 @@ class App(tk.Tk):
 
     def __init__(self, fs: FileSystem = None):
         super().__init__()
-        self.title("Simulador de SO - Arquivos e Armazenamento")
+        self.title("Simulador de SO - Arquivos, Armazenamento e Segurança")
         self.geometry("1200x800")
         self.minsize(950, 640)
         self.fs = fs or FileSystem(Disk(4096, 64), IndexedAllocation())
         self.highlight = None
+        self.session_windows = []
         self.expanded = {"/"}
         self.back, self.fwd = [], []
         self._busy = False
@@ -105,7 +107,7 @@ class App(tk.Tk):
     def _try(self, fn, *args, **kwargs) -> bool:
         try:
             fn(*args, **kwargs)
-        except (FSError, DiskError, ValueError) as exc:
+        except (FSError, DiskError, ValueError, SecurityError) as exc:
             self.show_error(str(exc))
             self.refresh()
             return False
@@ -128,9 +130,22 @@ class App(tk.Tk):
         d.add_separator()
         d.add_command(label="Formatar disco...", command=self.ask_format)
         m.add_cascade(label="Disco", menu=d)
+        security = tk.Menu(m, tearoff=0)
+        for label, command in (
+            ("Entrar...", self.ask_login), ("Sair da sessão", self.logout),
+            ("Definir senha...", self.ask_password), ("Cadastrar grupo...", self.ask_group),
+            ("Cadastrar usuário...", self.ask_user), ("Adicionar usuário a grupo...", self.ask_membership),
+            ("Alterar permissões...", self.ask_chmod), ("Alterar proprietário...", self.ask_chown),
+            ("Criptografar arquivo...", lambda: self.ask_encryption(True)),
+            ("Descriptografar arquivo...", lambda: self.ask_encryption(False)),
+            ("Verificar execução", self.check_execute), ("Verificar integridade", self.show_scan),
+            ("Log de auditoria", self.show_audit),
+        ):
+            security.add_command(label=label, command=command)
+        m.add_cascade(label="Segurança", menu=security)
         h = tk.Menu(m, tearoff=0)
         h.add_command(label="Sobre", command=lambda: messagebox.showinfo(
-            "Sobre", "Simulador de SO Modular - Etapas 1 e 2\nArquivos, E/S, SSD e RAID.", parent=self))
+            "Sobre", "Simulador de SO Modular - Etapas 1 a 3\nArquivos, armazenamento e segurança.", parent=self))
         m.add_cascade(label="Ajuda", menu=h)
         self.config(menu=m)
 
@@ -245,7 +260,7 @@ class App(tk.Tk):
         prev = self.fs.cwd.path()
         try:
             self.fs.chdir(path)
-        except (FSError, DiskError) as exc:
+        except (FSError, DiskError, SecurityError) as exc:
             self.show_error(str(exc))
             self.refresh()
             return False
@@ -269,7 +284,7 @@ class App(tk.Tk):
     def _go_hist(self, path):
         try:
             self.fs.chdir(path)
-        except FSError:
+        except (FSError, SecurityError):
             self.fs.cwd = self.fs.root
         self.highlight = None
         self.refresh()
@@ -304,7 +319,9 @@ class App(tk.Tk):
         self.btn_fwd.state(["!disabled" if self.fwd else "disabled"])
         self.btn_up.state(["!disabled" if self.fs.cwd.parent else "disabled"])
         d = self.fs.disk
-        self.status.set(f"{self.fs.cwd.path()}  |  {len(self.fs.cwd.children)} item(ns)  |  "
+        identity = self.fs.security.identity()
+        items = len(self.fs.visible_children(self.fs.cwd))
+        self.status.set(f"{identity}  |  {self.fs.cwd.path()}  |  {items} item(ns)  |  "
                         f"{d.used_count}/{d.total_blocks} blocos usados")
 
     def _fill_tree(self):
@@ -314,7 +331,15 @@ class App(tk.Tk):
             iid = node.path()
             text = "/ (raiz)" if node.is_root else node.name
             self.tree.insert(parent_iid, "end", iid=iid, text=text, open=iid in self.expanded)
-            for c in self.fs.sorted_children(node):
+            children = self.fs.visible_children(node)
+            if self.fs._contains(node, self.fs.cwd) and node is not self.fs.cwd:
+                # Mantém visível o ramo atual em pastas com travessia e sem listagem.
+                branch = self.fs.cwd
+                while branch.parent is not node:
+                    branch = branch.parent
+                if branch not in children:
+                    children.append(branch)
+            for c in children:
                 if c.is_dir:
                     add(c, iid)
         add(self.fs.root, "")
@@ -329,7 +354,7 @@ class App(tk.Tk):
     def _fill_list(self):
         self.lv.delete(*self.lv.get_children())
         bs = self.fs.disk.block_size
-        for n in self.fs.sorted_children(self.fs.cwd):
+        for n in self.fs.visible_children(self.fs.cwd):
             if n.is_dir:
                 vals = ("Pasta", "", f"bloco {n.meta_block:02d}", "")
                 text = n.name + "/"
@@ -338,8 +363,9 @@ class App(tk.Tk):
                     ", ..." if len(n.blocks) > 8 else "")
                 if n.meta_block is not None:
                     blocks = f"i-node {n.meta_block:02d} | " + blocks
-                waste = len(n.blocks) * bs - n.size
-                vals = ("Arquivo", format_size(n.size), blocks or "-", f"{waste} B")
+                waste = len(n.blocks) * bs - n.stored_size
+                kind = "Criptografado" if n.encryption else "Arquivo"
+                vals = (kind, format_size(n.size), blocks or "-", f"{waste} B")
                 text = n.name
             self.lv.insert("", "end", iid=n.path(), text=text, values=vals)
         if self.highlight is not None and self.highlight.parent is self.fs.cwd:
@@ -407,6 +433,11 @@ class App(tk.Tk):
         c, d = self.canvas, self.fs.disk
         bs, cell, gap, pad = d.block_size, self.CELL, self.GAP, self.PAD
         c.delete("all")
+        if not self.fs.security.is_kernel:
+            c.create_text(12, 12, anchor="nw", text="Mapa físico disponível no MODO_KERNEL.")
+            c.configure(scrollregion=(0, 0, 240, 40))
+            self.hover.set("")
+            return
         width = max(c.winfo_width(), 240)
         self._last_w = c.winfo_width()
         self._cols = cols = max(1, (width - 2 * pad - 16 + gap) // (cell + gap))
@@ -429,7 +460,7 @@ class App(tk.Tk):
                 c.create_text(x + cell / 2, y + cell / 2 + 4, text="i", fill="white",
                               font=("TkDefaultFont", 11, "bold"))
             else:
-                used = min(bs, o.node.size - o.index * bs)
+                used = min(bs, o.node.stored_size - o.index * bs)
                 ratio = used / bs
                 if ratio < 1:      # parte não usada do bloco = fragmentação interna
                     c.create_rectangle(x, y, x + cell, y + cell, fill=C_WASTE, outline="")
@@ -447,6 +478,8 @@ class App(tk.Tk):
         c.configure(scrollregion=(0, 0, width, 2 * pad + rows * (cell + gap)))
 
     def _block_at(self, event):
+        if not self.fs.security.is_kernel:
+            return None
         c = self.canvas
         x, y = c.canvasx(event.x) - self.PAD, c.canvasy(event.y) - self.PAD
         step = self.CELL + self.GAP
@@ -483,6 +516,15 @@ class App(tk.Tk):
 
     # ---- diagnóstico -----------------------------------------------------------------------
     def update_diag(self):
+        if not self.fs.security.is_kernel:
+            self.diag.configure(state="normal")
+            self.diag.delete("1.0", "end")
+            self.diag.insert("1.0", self.fs.security.identity())
+            if self.highlight is not None:
+                self.diag.insert("end", "\n\n" + describe_acl(self.highlight))
+            self.diag.configure(state="disabled")
+            self.banner.configure(text="Diagnóstico físico disponível no MODO_KERNEL.", bg="#526073")
+            return
         d = self.fs.disk
         a = report.analyze(self.fs)
         lines = [f"Bloco: {format_size(d.block_size)} | {d.total_blocks} blocos "
@@ -510,33 +552,42 @@ class App(tk.Tk):
             self.btn_compact.configure(text="Compactar disco")
 
     def show_report(self):
+        if self._require_kernel("relatório do disco"):
+            self._show_text("Relatório detalhado do disco", report.render_status(self.fs, details=True))
+
+    def _session_window(self, title):
+        self.session_windows = [win for win in self.session_windows if win.winfo_exists()]
         win = tk.Toplevel(self)
-        win.title("Relatório detalhado do disco")
+        win.title(title)
+        self.session_windows.append(win)
+        return win
+
+    def _show_text(self, title, content):
+        win = self._session_window(title)
         win.geometry("900x600")
         txt = tk.Text(win, wrap="none", font="TkFixedFont")
         sb = ttk.Scrollbar(win, command=txt.yview)
         txt.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         txt.pack(fill="both", expand=True)
-        txt.insert("1.0", report.render_status(self.fs, details=True))
+        txt.insert("1.0", content)
         txt.configure(state="disabled")
 
     def configure_storage(self, kind, **options):
-        return self._try(self.fs.disk.configure_storage, kind, **options)
+        return self._try(self.fs.configure_storage, kind, **options)
 
     def flush_io(self):
+        if not self._require_kernel("atendimento da fila física"):
+            return False
         return self._try(self.fs.disk.flush)
 
     def raid_action(self, action, number):
-        storage = self.fs.disk.storage
-        if not isinstance(storage, RAIDArray):
-            self.show_error("Configure um arranjo RAID primeiro.")
-            return False
-        return self._try(getattr(storage, action), number)
+        return self._try(self.fs.raid_action, action, number)
 
     def show_storage(self):
-        win = tk.Toplevel(self)
-        win.title("Armazenamento e atendimento de E/S")
+        if not self._require_kernel("consulta do armazenamento físico"):
+            return
+        win = self._session_window("Armazenamento e atendimento de E/S")
         win.geometry("1050x720")
         config = ttk.Frame(win, padding=8)
         config.pack(fill="x")
@@ -618,7 +669,7 @@ class App(tk.Tk):
         if n is None:
             return
         if n.is_dir:
-            info = (f"{n.path()}\nTipo: pasta\nItens: {len(n.children)}\n"
+            info = (f"{n.path()}\nTipo: pasta\nItens: {len(self.fs.visible_children(n))}\n"
                     f"Bloco: {n.meta_block}")
         else:
             bs = self.fs.disk.block_size
@@ -626,8 +677,10 @@ class App(tk.Tk):
                     f"({format_size(n.size)})\n"
                     f"Blocos de dados: {n.blocks or '-'}\n"
                     f"I-node: {n.meta_block if n.meta_block is not None else '-'}\n"
-                    f"Fragmentação interna: {len(n.blocks) * bs - n.size} bytes")
-        messagebox.showinfo("Propriedades", info, parent=self)
+                    f"Fragmentação interna: {len(n.blocks) * bs - n.stored_size} bytes")
+            if n.encryption:
+                info += "\nCriptografia: AES-GCM"
+        messagebox.showinfo("Propriedades", info + "\n\n" + describe_acl(n), parent=self)
 
     # ---- ações (sem diálogo; usadas também pelos testes) ------------------------------------
     def _join(self, name: str) -> str:
@@ -658,8 +711,8 @@ class App(tk.Tk):
             self.fs.move(path, node.parent.path().rstrip("/") + "/" + new_name)
         return self._try(run)
 
-    def save_file(self, path: str, text: str) -> bool:
-        return self._try(lambda: self.fs.write(path, text.encode("utf-8")))
+    def save_file(self, path: str, text: str, key=None) -> bool:
+        return self._try(self.fs.write, path, text.encode("utf-8"), key=key)
 
     def compact(self) -> bool:
         before = len(self.fs.disk.free_runs())
@@ -681,11 +734,8 @@ class App(tk.Tk):
     def format_disk(self, block_size: str, blocks: str, alloc: str) -> bool:
         def run():
             bs, n = parse_size(block_size), int(blocks)
-            self.fs = FileSystem(Disk(bs, n), make_strategy(alloc))
-            self.highlight = None
-            self.back.clear()
-            self.fwd.clear()
-            self.expanded = {"/"}
+            self.fs.format(bs, n, make_strategy(alloc))
+            self._clear_session_view()
         return self._try(run)
 
     # ---- ações com diálogo ----------------------------------------------------------------------
@@ -717,6 +767,8 @@ class App(tk.Tk):
             self.rename(n.path(), name.strip())
 
     def ask_format(self):
+        if not self._require_kernel("formatação"):
+            return
         dlg = FormatDialog(self, self.fs.disk, self.fs.strategy)
         if dlg.result and self.confirm("Formatar o disco apaga TODOS os arquivos. Continuar?"):
             self.format_disk(*dlg.result)
@@ -728,13 +780,16 @@ class App(tk.Tk):
 
     def open_editor(self, node):
         try:
-            data = self.fs.read_node(node)
-        except (FSError, DiskError) as exc:
+            self.fs.security.require(node, "r")
+            key = self._ask_secret("Chave do arquivo") if node.encryption else None
+            if node.encryption and key is None:
+                return
+            data = self.fs.read_node(node, key)
+        except (FSError, DiskError, SecurityError) as exc:
             self.show_error(str(exc))
             return
         binary = b"\0" in data
-        win = tk.Toplevel(self)
-        win.title(f"Editar - {node.path()}")
+        win = self._session_window(f"Editar - {node.path()}")
         win.geometry("640x420")
         note = (f"Conteúdo binário/zerado ({len(data)} bytes). Salvar substitui o conteúdo "
                 f"pelo texto abaixo." if binary else f"{len(data)} bytes")
@@ -745,12 +800,140 @@ class App(tk.Tk):
             txt.insert("1.0", data.decode("utf-8", errors="replace"))
 
         def save():
-            if self.save_file(node.path(), txt.get("1.0", "end-1c")):
+            if not self._alive(node):
+                self.show_error("O arquivo foi removido.")
+                return
+            if self.save_file(node.path(), txt.get("1.0", "end-1c"), key):
                 win.destroy()
         row = ttk.Frame(win, padding=4)
         row.pack(fill="x")
         ttk.Button(row, text="Salvar", command=save).pack(side="right", padx=2)
         ttk.Button(row, text="Cancelar", command=win.destroy).pack(side="right")
+
+
+    # ---- segurança ------------------------------------------------------
+    def _require_kernel(self, action):
+        try:
+            self.fs.security.require_kernel(action)
+        except SecurityError as exc:
+            self.show_error(str(exc))
+            return False
+        return True
+
+    def _clear_session_view(self):
+        for win in self.session_windows:
+            if win.winfo_exists():
+                win.destroy()
+        self.session_windows.clear()
+        self.highlight = None
+        self.back.clear()
+        self.fwd.clear()
+        self.expanded = {"/"}
+
+    def login(self, user, password):
+        def change_session():
+            self.fs.login(user, password)
+            self._clear_session_view()
+        return self._try(change_session)
+
+    def logout(self):
+        self.fs.logout()
+        self._clear_session_view()
+        self.refresh()
+
+    def _ask_secret(self, label):
+        return simpledialog.askstring("Segurança", label, show="*", parent=self)
+
+    def ask_login(self):
+        name = simpledialog.askstring("Entrar", "Usuário", parent=self)
+        if name:
+            password = self._ask_secret("Senha")
+            if password is not None:
+                self.login(name, password)
+
+    def ask_password(self):
+        name = self.fs.security.name
+        if self.fs.security.is_kernel:
+            name = simpledialog.askstring("Definir senha", "Usuário", initialvalue=name, parent=self)
+        if name and self.fs.security.current:
+            password = self._ask_secret("Nova senha")
+            if password is not None:
+                self._try(self.fs.security.set_password, name, password)
+
+    def ask_group(self):
+        if self._require_kernel("cadastro de grupo"):
+            name = simpledialog.askstring("Cadastrar grupo", "Grupo", parent=self)
+            if name:
+                self._try(self.fs.security.add_group, name)
+
+    def ask_user(self):
+        if not self._require_kernel("cadastro de usuário"):
+            return
+        name = simpledialog.askstring("Cadastrar usuário", "Usuário", parent=self)
+        if not name:
+            return
+        group = simpledialog.askstring("Cadastrar usuário", "Grupo principal", initialvalue="users", parent=self)
+        if group:
+            password = self._ask_secret("Senha do usuário")
+            if password is not None:
+                self._try(self.fs.security.add_user, name, group, password)
+
+    def ask_membership(self):
+        if not self._require_kernel("alteração de grupo"):
+            return
+        name = simpledialog.askstring("Adicionar a grupo", "Usuário", parent=self)
+        if name:
+            group = simpledialog.askstring("Adicionar a grupo", "Grupo suplementar", parent=self)
+            if group:
+                self._try(self.fs.security.add_membership, name, group)
+
+    def ask_chmod(self):
+        node = self.selected_node() or self.fs.cwd
+        mode = simpledialog.askstring("Permissões", "Permissões octais ou rwx",
+                                      initialvalue=f"{node.mode:03o}", parent=self)
+        if mode is not None:
+            self._try(self.fs.chmod, node.path(), mode)
+
+    def ask_chown(self):
+        if not self._require_kernel("alteração de proprietário"):
+            return
+        node = self.selected_node() or self.fs.cwd
+        identity = simpledialog.askstring("Proprietário", "Usuário ou usuário:grupo",
+                                          initialvalue=f"{node.owner}:{node.group}", parent=self)
+        if identity:
+            owner, _, group = identity.partition(":")
+            self._try(self.fs.chown, node.path(), owner, group or None)
+
+    def ask_encryption(self, enabled):
+        node = self.selected_node()
+        if node is None or node.is_dir:
+            self.show_error("Selecione um arquivo.")
+            return
+        key = self._ask_secret("Chave do arquivo")
+        if key is not None:
+            fn = self.fs.encrypt_file if enabled else self.fs.decrypt_file
+            self._try(fn, node.path(), key)
+
+    def check_execute(self):
+        node = self.selected_node()
+        if node is not None and self._try(self.fs.check_execute, node.path()):
+            self.status.set(f"Execução simulada autorizada para '{node.path()}'.")
+
+    def show_scan(self):
+        try:
+            text = render_scan(self.fs.antivirus_scan())
+        except (SecurityError, FSError, DiskError) as exc:
+            self.show_error(str(exc))
+        else:
+            self._show_text("Varredura de integridade", text)
+
+    def show_audit(self):
+        try:
+            text = "\n".join(map(str, self.fs.security.events()))
+        except SecurityError as exc:
+            self.show_error(str(exc))
+        else:
+            self._show_text("Log de auditoria", text or "(sem eventos)")
 
 
 def run(fs: FileSystem = None) -> None:

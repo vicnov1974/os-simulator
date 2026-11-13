@@ -29,7 +29,7 @@ def analyze(fs) -> dict:
     runs = d.free_runs()
     largest = max((l for _, l in runs), default=0)
     allocated_data = sum(len(n.blocks) * bs for n in files)
-    internal = sum(len(n.blocks) * bs - n.size for n in files)
+    internal = sum(len(n.blocks) * bs - n.stored_size for n in files)
     scattered = [n for n in files if not is_contiguous(n.blocks)]
 
     if fs.strategy.contiguous:
@@ -45,7 +45,7 @@ def analyze(fs) -> dict:
         "free_runs": runs, "largest_run": largest,
         "allocated_data": allocated_data,
         "internal_total": internal,
-        "files_with_internal": sum(1 for n in files if len(n.blocks) * bs - n.size > 0),
+        "files_with_internal": sum(1 for n in files if len(n.blocks) * bs > n.stored_size),
         "external": external,
         "needs_compaction": needs_compaction,
         "scattered_files": scattered,
@@ -81,7 +81,7 @@ def render_grid(fs, color: bool = False, cols: int = 16) -> str:
                 cell = paint("[@]", "1;35", color)
             else:
                 s = syms[o.node]
-                used = min(bs, o.node.size - o.index * bs)
+                used = min(bs, o.node.stored_size - o.index * bs)
                 text = f"[{s}]" if used == bs else f"({s})"
                 cell = paint(text, _PALETTE[order.index(o.node) % len(_PALETTE)], color)
             cells.append(cell)
@@ -108,7 +108,7 @@ def _describe(fs, b: int):
     if o.kind == "FILE_INODE":
         return "INODE_ARQ", (f"Arquivo '{node.path()}' "
                              f"(índice -> blocos: {_fmt_blocks(node.blocks)})")
-    used = min(bs, node.size - o.index * bs)
+    used = min(bs, node.stored_size - o.index * bs)
     note = fs.strategy.data_note(node, o.index, d)
     return "DADO", f"'{node.path()}' (Bloco {o.index + 1} - {used} bytes ocupados){note}"
 
@@ -140,12 +140,14 @@ def render_file_report(fs, n) -> str:
     bs = fs.disk.block_size
     w = max(2, len(str(fs.disk.total_blocks - 1)))
     alloc = len(n.blocks) * bs
-    waste = alloc - n.size
+    waste = alloc - n.stored_size
     meta = " + 1 bloco de i-node" if n.meta_block is not None else ""
     out = [f"Arquivo '{n.path()}'",
            f"  Tamanho Real            : {n.size} bytes ({format_size(n.size)})",
            f"  Espaço Alocado no Disco : {alloc} bytes "
            f"({len(n.blocks)} bloco(s) de {format_size(bs)}{meta})"]
+    if n.encryption:
+        out.append(f"  Conteúdo criptografado  : {n.stored_size} bytes (AES-GCM)")
     if waste > 0 and n.blocks:
         out.append(f"  Fragmentação Interna    : {waste} bytes "
                    f"({waste / bs * 100:.0f}% de desperdício no Bloco {n.blocks[-1]:0{w}d})")

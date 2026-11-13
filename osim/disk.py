@@ -97,8 +97,12 @@ class Disk:
         self.raw[b] = bytes(data)
 
     def read(self, b: int) -> bytes:
+        return self.read_physical(b)[:len(self.raw.get(b, b""))]
+
+    def read_physical(self, b: int) -> bytes:
+        """Lê o bloco inteiro pelo dispositivo, incluindo preenchimento e paridade."""
         self._check_block(b)
-        return self.storage.read(b, self._label(b))[:len(self.raw.get(b, b""))]
+        return self.storage.read(b, self._label(b))
 
     def _check_block(self, b):
         if not 0 <= b < self.total_blocks:
@@ -123,9 +127,9 @@ class Disk:
         """Migra os bytes para outro dispositivo antes de publicar a mudança."""
         from .storage import make_storage
         replacement = make_storage(kind, self.block_size, self.total_blocks, **options)
-        contents = {b: self.read(b) for b, owner in enumerate(self.owner) if owner is not None}
-        for b, data in contents.items():
-            replacement.write(b, data, self._label(b) + " [migração]")
+        for b, owner in enumerate(self.owner):
+            if owner is not None:
+                replacement.write(b, self.read_physical(b), self._label(b) + " [migração]")
         replacement.flush()
         self.storage = replacement
 
