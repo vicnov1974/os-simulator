@@ -1,4 +1,4 @@
-# Etapa 2 - execute: python main.py --script examples/06_ssd.txt
+# Etapa 2 - execute: python3 main.py --script examples/06_ssd.txt
 format --blocks 8 --alloc linked
 disk_config ssd
 write_file /contador "valor 01"

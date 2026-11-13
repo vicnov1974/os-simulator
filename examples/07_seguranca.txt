@@ -1,4 +1,4 @@
-# Execute: python main.py --script examples/07_seguranca.txt
+# Execute: python3 main.py --script examples/07_seguranca.txt
 # Senhas e chaves abaixo são fictícias e servem apenas para a demonstração.
 passwd root --password "raiz-demo"
 groupadd devs

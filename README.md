@@ -10,20 +10,24 @@ Projeto em etapas incrementais. Inclui o sistema de arquivos da **Etapa 1**, o g
 ```bash
 git clone <URL-DO-SEU-REPOSITORIO>
 cd os-simulator
-python -m pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
 
-python main.py                                   # shell interativo (disco de 16 x 4 KB, indexado)
-python main.py --alloc contiguous --block-size 1KB --blocks 32
-python main.py --script examples/01_enunciado_indexada.txt   # roda um script de demonstração
+python3 main.py                                   # shell interativo (disco de 16 x 4 KB, indexado)
+python3 main.py --alloc contiguous --block-size 1KB --blocks 32
+python3 main.py --script examples/01_enunciado_indexada.txt   # roda um script de demonstração
 ```
 
-Testes (opcional): `pip install -r requirements-dev.txt && pytest` (os testes da GUI são pulados se não houver display)
+No Ubuntu ou WSL, se a criação do ambiente virtual indicar que `venv` ou `ensurepip` está indisponível, instale `python3-venv` com `sudo apt install python3-venv` e repita a criação do ambiente.
+
+Para executar os testes, use `python3 -m pip install -r requirements-dev.txt && python3 -m pytest`. Os testes da GUI são pulados se não houver display.
 
 ## Interface gráfica
 
 ```bash
-python gui.py                                    # disco de 64 x 4 KB, alocação indexada
-python gui.py --alloc contiguous --block-size 1KB --blocks 128
+python3 gui.py                                    # disco de 64 x 4 KB, alocação indexada
+python3 gui.py --alloc contiguous --block-size 1KB --blocks 128
 ```
 
 ![Interface gráfica](docs/gui.png)
@@ -115,7 +119,7 @@ Necessidade de Compactação       : NÃO (alocação não-contígua não exige 
 
 ## Exemplo (alocação contígua com fragmentação externa)
 
-Rode `python main.py --script examples/02_contigua_fragmentacao.txt`. Após remover um arquivo do meio, o relatório mostra:
+Rode `python3 main.py --script examples/02_contigua_fragmentacao.txt`. Após remover um arquivo do meio, o relatório mostra:
 
 ```
 [MAPA GRÁFICO DO DISCO]
@@ -170,13 +174,13 @@ Shell / GUI -> FileSystem -> AllocationStrategy -> Disk lógico
 ### Executar e demonstrar
 
 ```bash
-python main.py --script examples/04_escalonamento.txt --blocks 200
-python main.py --script examples/05_raid5.txt
-python main.py --script examples/06_ssd.txt
+python3 main.py --script examples/04_escalonamento.txt --blocks 200
+python3 main.py --script examples/05_raid5.txt
+python3 main.py --script examples/06_ssd.txt
 
-python main.py --device hdd --scheduler scan --head 53 --tracks 200 --direction up
-python main.py --device raid --raid-level 5 --disks 3 --blocks 32
-python gui.py --device ssd
+python3 main.py --device hdd --scheduler scan --head 53 --tracks 200 --direction up
+python3 main.py --device raid --raid-level 5 --disks 3 --blocks 32
+python3 gui.py --device ssd
 ```
 
 As opções `--device`, `--raid-level`, `--disks`, `--scheduler`, `--head`, `--tracks` e `--direction` estão disponíveis nos dois pontos de entrada. Na GUI, use **Disco > Armazenamento, E/S e RAID...** para migrar os arquivos, consultar/atender filas, demonstrar os algoritmos, falhar discos e reconstruí-los. O painel de diagnóstico também mostra dispositivo e número de requisições pendentes.
@@ -248,8 +252,8 @@ RAID 4/5 calcula a paridade **sobre bytes reais**, não somente rótulos: `parid
 ### Testes da Etapa 2
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest -q
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest -q
 ```
 
 `tests/test_storage.py` cobre o resultado SSTF de 208 trilhas, as quatro políticas e seus extremos, despacho efetivo da fila, dependências de leitura/escrita, integração com as três alocações, paridade, falha de cada membro, escrita degradada, reconstrução, tolerância excedida, rollback, migração e preservação de dados durante coleta de lixo do SSD. `tests/test_gui.py` também cobre os controles de SSD/RAID e a janela de armazenamento, quando há display.
@@ -257,7 +261,7 @@ python -m pytest -q
 ## Etapa 3 — Identidade, proteção de dados e integridade
 
 ```bash
-python main.py --script examples/07_seguranca.txt
+python3 main.py --script examples/07_seguranca.txt
 ```
 
 O exemplo cria o grupo `devs` e o usuário `carlos`, demonstra o bloqueio de leitura de um arquivo `750`, grava um arquivo criptografado e executa a varredura após uma alteração simulada. As credenciais do exemplo são fictícias.

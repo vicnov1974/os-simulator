@@ -1,4 +1,4 @@
-# Etapa 2 - execute: python main.py --script examples/05_raid5.txt
+# Etapa 2 - execute: python3 main.py --script examples/05_raid5.txt
 disk_config raid --level 5 --disks 3
 mkdir /dados
 write_file /dados/planilha.csv --size 8KB
