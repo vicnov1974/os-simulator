@@ -10,8 +10,9 @@ from osim.filesystem import FileSystem
 from osim.shell import Shell, has_inline_secret
 from osim.utils import parse_size
 from osim.storage import add_storage_arguments, storage_from_args
+from osim.memory import add_memory_arguments, memory_from_args
 
-BANNER = "Simulador de SO - Etapas 1 a 3: Arquivos, Armazenamento e Segurança  (digite 'help')"
+BANNER = "Simulador de SO - Etapas 1 a 4: Arquivos, Armazenamento, Segurança e Memória  (digite 'help')"
 
 
 def main() -> int:
@@ -23,12 +24,14 @@ def main() -> int:
     ap.add_argument("--script", metavar="ARQUIVO", help="executa comandos de um arquivo")
     ap.add_argument("--no-color", action="store_true", help="desativa cores ANSI")
     add_storage_arguments(ap)
+    add_memory_arguments(ap)
     args = ap.parse_args()
 
     color = sys.stdout.isatty() and not args.no_color and "NO_COLOR" not in os.environ
     try:
         bs = parse_size(args.block_size)
         fs = FileSystem(Disk(bs, args.blocks, storage_from_args(args, bs)), make_strategy(args.alloc))
+        fs.memory = memory_from_args(fs, args)
     except (ValueError, DiskError) as exc:
         ap.error(str(exc))
     shell = Shell(fs, color=color)

@@ -1,0 +1,25 @@
+# Etapa 4 — executar com --ram-size 4104KB (4MB reservados + 2 molduras de 4KB).
+# O swap compartilha o disco de arquivos e sua E/S HDD, SSD ou RAID.
+write_file /dados.txt "Arquivo das etapas anteriores"
+create_process --name App_Navegador --size 10KB --type normal
+execute_step --process App_Navegador --instruction "STORE_DATA Página 0 dados preservados no swap"
+translate_address --process App_Navegador --page 1
+translate_address --process App_Navegador --page 1
+# RAM cheia: LRU remove a página 0, pois a página 1 foi usada mais recentemente.
+execute_step --process App_Navegador --instruction "LOAD_DATA Página 2"
+memory_status --virtual --details
+io_status
+# Retorna os bytes escritos na página 0, após uma leitura real no disco simulado.
+execute_step --process App_Navegador --instruction "LOAD_DATA Página 0"
+fs_status --details
+# Compactação/migração dos arquivos preservam os blocos de swap.
+compact
+disk_config ssd
+read_file /dados.txt
+memory_algorithm second-chance
+execute_step --process App_Navegador --instruction "LOAD_DATA Página 1"
+execute_step --process App_Navegador --instruction "LOAD_DATA Página 2"
+execute_step --process App_Navegador --instruction "LOAD_DATA Página 0"
+memory_reports
+terminate_process --name App_Navegador
+memory_status

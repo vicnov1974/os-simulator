@@ -8,6 +8,7 @@ from osim.filesystem import FileSystem
 from osim.gui import run
 from osim.utils import parse_size
 from osim.storage import add_storage_arguments, storage_from_args
+from osim.memory import add_memory_arguments, memory_from_args
 
 
 def main():
@@ -17,10 +18,12 @@ def main():
     ap.add_argument("--alloc", default="indexed", choices=list(STRATEGIES),
                     help="estratégia inicial (padrão: indexed)")
     add_storage_arguments(ap)
+    add_memory_arguments(ap)
     a = ap.parse_args()
     try:
         bs = parse_size(a.block_size)
         fs = FileSystem(Disk(bs, a.blocks, storage_from_args(a, bs)), make_strategy(a.alloc))
+        fs.memory = memory_from_args(fs, a)
     except (ValueError, DiskError) as exc:
         ap.error(str(exc))
     run(fs)

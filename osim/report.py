@@ -79,6 +79,8 @@ def render_grid(fs, color: bool = False, cols: int = 16) -> str:
                 cell = paint("[#]", "1;34", color)
             elif o.kind == "FILE_INODE":
                 cell = paint("[@]", "1;35", color)
+            elif o.kind == "SWAP":
+                cell = paint("[S]", "1;36", color)
             else:
                 s = syms[o.node]
                 used = min(bs, o.node.stored_size - o.index * bs)
@@ -89,7 +91,7 @@ def render_grid(fs, color: bool = False, cols: int = 16) -> str:
 
     lines.append("")
     lines.append("Legenda: [#] diretório | [@] i-node | [X] bloco cheio | "
-                 "(X) bloco parcial = fragmentação interna | . livre")
+                 "(X) bloco parcial = fragmentação interna | [S] swap | . livre")
     for n, s in syms.items():
         lines.append(f"  {paint(s, _PALETTE[order.index(n) % len(_PALETTE)], color)} = "
                      f"{n.path()}  ({format_size(n.size)}, {len(n.blocks)} bloco(s))")
@@ -103,6 +105,8 @@ def _describe(fs, b: int):
     d, bs = fs.disk, fs.disk.block_size
     o = d.owner[b]
     node = o.node
+    if o.kind == "SWAP":
+        return "SWAP", f"{node.path()} / Página Lógica {o.index}"
     if o.kind == "DIR_META":
         return fs.strategy.dir_label(node.is_root), f"Diretório '{node.path()}'"
     if o.kind == "FILE_INODE":

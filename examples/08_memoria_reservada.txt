@@ -1,0 +1,12 @@
+# Etapa 4 — exemplo 4.1: 4MB reservados, incluindo 1MB do núcleo.
+create_process --name Kernel_DiskDriver --size 512KB --type critical
+create_process --name Kernel_NetDriver --size 1024KB --type critical
+create_process --name Kernel_CryptoEngine --size 512KB --type critical
+terminate_process --name Kernel_NetDriver
+memory_status --reserved
+# Falha esperada: há 2MB livres, mas o maior bloco tem somente 1MB.
+create_process --name Kernel_Grande --size 1536KB --type critical
+memory_compact --reserved
+create_process --name Kernel_Grande --size 1536KB --type critical
+memory_status --reserved
+memory_reports

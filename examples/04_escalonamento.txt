@@ -1,4 +1,4 @@
-# Etapa 2 - execute: python main.py --blocks 200 --script examples/04_escalonamento.txt
+# Etapa 2 - execute: python3 main.py --blocks 200 --script examples/04_escalonamento.txt
 # Exemplo do enunciado: SSTF = 208 trilhas.
 disk_schedule 98 183 37 122 14 --head 53 --algorithm sstf
 disk_schedule 98 183 37 122 14 --head 53 --algorithm fcfs

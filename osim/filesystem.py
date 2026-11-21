@@ -61,6 +61,8 @@ class FileSystem:
         self.root = Node("", None, True)
         self.cwd = self.root
         self._alloc_meta(self.root, "DIR_META")
+        from .memory import MemoryManager
+        self.memory = MemoryManager(self)
 
     # ------------------------------------------------------------------
     # Resolução de caminhos
@@ -494,7 +496,7 @@ class FileSystem:
         if strategy is not None:
             self.strategy = strategy
         try:
-            self.disk.reset()
+            self.disk.reset(preserve_swap=True)
             for n in nodes:
                 n.meta_block, n.blocks = None, []
             for n in nodes:
@@ -635,6 +637,8 @@ class FileSystem:
 
     def format(self, block_size, blocks, strategy):
         self.security.require_kernel("formatação")
+        if self.memory.processes:
+            raise FSError("encerre os processos antes de formatar o disco usado pelo swap")
         new = FileSystem(Disk(block_size, blocks), strategy, self.security)
         self.disk, self.strategy = new.disk, new.strategy
         self.root, self.cwd = new.root, new.cwd

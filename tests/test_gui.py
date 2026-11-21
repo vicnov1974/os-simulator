@@ -104,6 +104,43 @@ def test_storage_switch_and_raid_controls(app):
     assert "RAID 5" in app.diag.get("1.0", "end")
 
 
+def test_memory_panel_buttons_swap_map_and_session_cleanup(app):
+    from osim.memory import MemoryManager
+
+    app.fs.memory = MemoryManager(app.fs, ram_size=12288, reserved_size=8192, kernel_size=4096)
+    app.show_memory()
+    app.update()
+    win = app.session_windows[-1]
+
+    def descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from descendants(child)
+
+    buttons = {widget.cget("text"): widget for widget in descendants(win)
+               if widget.winfo_class() == "TButton"}
+    buttons["Criar processo"].invoke()
+    buttons["Executar instrução"].invoke()
+    memory = app.fs.memory
+    memory.execute("App_Navegador", "STORE_DATA Página 0 conteúdo")
+    memory.translate("App_Navegador", 1)
+    app.refresh()
+    assert not app.errors
+    assert "RAM dinâmica" in app.diag.get("1.0", "end")
+    app.draw_map()  # renderiza os blocos SWAP sem tratá-los como arquivos da árvore
+    assert memory.stats()["swap_blocks"] == 4  # blocos de disco de 1KB
+    assert memory.execute("App_Navegador", "LOAD_DATA Página 0")[1].startswith("conteúdo".encode())
+    buttons["Compactar reservada"].invoke()
+    buttons["Aplicar algoritmo"].invoke()
+    buttons["Encerrar"].invoke()
+    assert not memory.processes and not app.errors
+    app.fs.security.add_user("ana", "users", "test-ana")
+    assert app.login("ana", "test-ana")
+    assert not win.winfo_exists()
+    app.show_memory()
+    assert app.errors and "MODO_KERNEL" in app.errors[-1]
+
+
 def test_session_switch_closes_privileged_windows_and_hides_restricted_paths(app):
     app.fs.security.set_password("root", "root-test")
     app.fs.security.add_user("carlos", "users", "carlos-test")
