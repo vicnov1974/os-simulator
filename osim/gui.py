@@ -885,22 +885,29 @@ class App(tk.Tk):
         binary = b"\0" in data
         win = self._session_window(f"Editar - {node.path()}")
         win.geometry("640x420")
+        win.minsize(420, 240)
         note = (f"Conteúdo binário/zerado ({len(data)} bytes). Salvar substitui o conteúdo "
                 f"pelo texto abaixo." if binary else f"{len(data)} bytes")
         ttk.Label(win, text=note, padding=4).pack(fill="x")
+        # Reserva o rodapé antes do Text, cuja altura solicitada pode ocupar a janela.
+        row = ttk.Frame(win, padding=4)
+        row.pack(side="bottom", fill="x")
         txt = tk.Text(win, wrap="word", undo=True)
         txt.pack(fill="both", expand=True, padx=4)
         if not binary:
             txt.insert("1.0", data.decode("utf-8", errors="replace"))
 
-        def save():
+        def save(event=None):
             if not self._alive(node):
                 self.show_error("O arquivo foi removido.")
-                return
+                return "break"
             if self.save_file(node.path(), txt.get("1.0", "end-1c"), key):
                 win.destroy()
-        row = ttk.Frame(win, padding=4)
-        row.pack(fill="x")
+            return "break"
+
+        win.bind("<Control-s>", save)
+        win.bind("<Control-S>", save)
+        ttk.Label(row, text="Ctrl+S para salvar").pack(side="left")
         ttk.Button(row, text="Salvar", command=save).pack(side="right", padx=2)
         ttk.Button(row, text="Cancelar", command=win.destroy).pack(side="right")
 

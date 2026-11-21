@@ -35,6 +35,7 @@ python3 gui.py --alloc contiguous --block-size 1KB --blocks 128
 - **Esquerda:** árvore de pastas. **Direita:** conteúdo da pasta (tipo, tamanho, blocos ocupados, fragmentação interna).
 - **Barra de endereço** (caminhos absolutos e relativos), botões voltar/avançar/subir.
 - **Botão direito:** abrir, renomear (F2), excluir (Del), propriedades, nova pasta/arquivo. Duplo clique abre pasta ou editor de texto.
+- **Editor de texto:** clique em **Salvar** no rodapé ou pressione **Ctrl+S** para gravar e fechar. **Cancelar** fecha sem gravar; não há salvamento automático.
 - **Mapa do disco:** um quadrado por bloco, uma cor por arquivo. Blocos parcialmente preenchidos mostram em rosa a parte desperdiçada (fragmentação interna). Passe o mouse para ver o detalhe do bloco; clique para selecionar o arquivo dono.
 - **Painel de diagnóstico:** fragmentação interna/externa e faixa vermelha **COMPACTAÇÃO NECESSÁRIA** (com botão para compactar).
 - **Alocação** trocável na barra superior (migra os arquivos); *Disco > Formatar* recria o disco com outro tamanho de bloco.
