@@ -18,6 +18,7 @@ from .utils import format_size, parse_size
 from .storage import RAIDArray, devices, render_io, render_storage
 from .scheduling import schedule, render_schedule
 from .security import SecurityError, describe_acl, render_scan
+from .memory import render_memory, render_process, render_translation
 
 FILE_COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#0fa3b1",
                "#d81b8c", "#7a9a01", "#469990", "#9a6324", "#800000", "#5c6bc0"]
@@ -78,7 +79,7 @@ class App(tk.Tk):
 
     def __init__(self, fs: FileSystem = None):
         super().__init__()
-        self.title("Simulador de SO - Arquivos, Armazenamento e Segurança")
+        self.title("Simulador de SO - Arquivos, Armazenamento, Segurança e Memória")
         self.geometry("1200x800")
         self.minsize(950, 640)
         self.fs = fs or FileSystem(Disk(4096, 64), IndexedAllocation())
@@ -130,6 +131,9 @@ class App(tk.Tk):
         d.add_separator()
         d.add_command(label="Formatar disco...", command=self.ask_format)
         m.add_cascade(label="Disco", menu=d)
+        memory_menu = tk.Menu(m, tearoff=0)
+        memory_menu.add_command(label="RAM híbrida, processos e paginação...", command=self.show_memory)
+        m.add_cascade(label="Memória", menu=memory_menu)
         security = tk.Menu(m, tearoff=0)
         for label, command in (
             ("Entrar...", self.ask_login), ("Sair da sessão", self.logout),
@@ -145,7 +149,7 @@ class App(tk.Tk):
         m.add_cascade(label="Segurança", menu=security)
         h = tk.Menu(m, tearoff=0)
         h.add_command(label="Sobre", command=lambda: messagebox.showinfo(
-            "Sobre", "Simulador de SO Modular - Etapas 1 a 3\nArquivos, armazenamento e segurança.", parent=self))
+            "Sobre", "Simulador de SO Modular - Etapas 1 a 4\nArquivos, armazenamento, segurança e memória.", parent=self))
         m.add_cascade(label="Ajuda", menu=h)
         self.config(menu=m)
 
@@ -459,6 +463,9 @@ class App(tk.Tk):
                 c.create_rectangle(x, y, x + cell, y + cell, fill=C_INODE, outline=C_EDGE)
                 c.create_text(x + cell / 2, y + cell / 2 + 4, text="i", fill="white",
                               font=("TkDefaultFont", 11, "bold"))
+            elif o.kind == "SWAP":
+                c.create_rectangle(x, y, x + cell, y + cell, fill="#007f86", outline=C_EDGE)
+                c.create_text(x + cell / 2, y + cell / 2 + 4, text="S", fill="white")
             else:
                 used = min(bs, o.node.stored_size - o.index * bs)
                 ratio = used / bs
@@ -505,6 +512,9 @@ class App(tk.Tk):
         b = self._block_at(event)
         if b is None or self.fs.disk.owner[b] is None:
             return
+        if self.fs.disk.owner[b].kind == "SWAP":
+            self.show_memory()
+            return
         node = self.fs.disk.owner[b].node
         target = node if node.is_dir else node.parent
         if target is not self.fs.cwd:
@@ -534,6 +544,9 @@ class App(tk.Tk):
                  report.render_global_report(self.fs)]
         lines += ["", f"Dispositivo: {'RAID ' + str(d.storage.level) if isinstance(d.storage, RAIDArray) else d.storage.kind.upper()}",
                   f"E/S pendentes: {sum(len(member.pending) for member in devices(d.storage))}"]
+        memory = self.fs.memory.stats()
+        lines += ["", f"RAM reservada: {format_size(memory['reserved_used'])} / {format_size(self.fs.memory.reserved_size)}",
+                  f"RAM dinâmica: {format_size(memory['resident_bytes'])} | Virtual: {format_size(memory['virtual_bytes'])}"]
         if self.highlight is not None and not self.highlight.is_dir:
             lines += ["", "--- ARQUIVO SELECIONADO ---",
                       report.render_file_report(self.fs, self.highlight)]
@@ -583,6 +596,87 @@ class App(tk.Tk):
 
     def raid_action(self, action, number):
         return self._try(self.fs.raid_action, action, number)
+
+    def show_memory(self):
+        if not self._require_kernel("gerenciamento gráfico da memória"):
+            return
+        win = self._session_window("Memória híbrida e processos")
+        win.geometry("1100x780")
+        form = ttk.Frame(win, padding=8)
+        form.pack(fill="x")
+        values = {}
+        defaults = {"Processo": "App_Navegador", "Tamanho": "10KB", "Tipo": "normal",
+                    "Página": "0", "Instrução": "LOAD_DATA Página 0", "Algoritmo": self.fs.memory.algorithm}
+        for column, (label, default) in enumerate(defaults.items()):
+            ttk.Label(form, text=label).grid(row=0, column=column, padx=3)
+            value = values[label] = tk.StringVar(value=default)
+            if label in ("Tipo", "Algoritmo"):
+                choices = ("normal", "critical") if label == "Tipo" else ("lru", "second-chance")
+                entry = ttk.Combobox(form, textvariable=value, values=choices, width=15, state="readonly")
+            else:
+                entry = ttk.Entry(form, textvariable=value, width=25 if label == "Instrução" else 16)
+            entry.grid(row=1, column=column, padx=3)
+        buttons = ttk.Frame(win, padding=4)
+        buttons.pack(fill="x")
+        pages = ttk.Notebook(win)
+        pages.pack(fill="both", expand=True)
+        report_text = tk.Text(pages, wrap="none", font="TkFixedFont")
+        log = tk.Text(pages, wrap="word", font="TkFixedFont")
+        pages.add(report_text, text="Ocupação, mapas e tabelas")
+        pages.add(log, text="Execução e substituições")
+
+        def refresh():
+            report_text.configure(state="normal")
+            report_text.delete("1.0", "end")
+            report_text.insert("1.0", render_memory(self.fs.memory, details=True))
+            report_text.insert("end", "\n\nRelatórios periódicos (a cada "
+                               f"{self.fs.memory.report_every} operações):\n")
+            from .shell import Shell
+            for operation, stats in self.fs.memory.periodic_reports:
+                report_text.insert("end", Shell._memory_snapshot(operation, stats) + "\n")
+            report_text.configure(state="disabled")
+
+        def run(action):
+            def perform():
+                message = action()
+                log.insert("end", str(message) + "\n\n")
+                log.see("end")
+            self._try(perform)
+            refresh()
+
+        def create():
+            memory = self.fs.memory
+            process = memory.create(values["Processo"].get(), parse_size(values["Tamanho"].get()), values["Tipo"].get())
+            return render_process(process, memory.page_size)
+
+        def execute():
+            result, data = self.fs.memory.execute(values["Processo"].get(), values["Instrução"].get())
+            return render_translation(result) + f"\nDados: {data[:64]!r}"
+
+        def compact():
+            moves = self.fs.memory.compact()
+            return "Compactação da RAM reservada: " + str(moves)
+
+        def algorithm():
+            self.fs.memory.set_algorithm(values["Algoritmo"].get())
+            return "Algoritmo: " + self.fs.memory.algorithm
+
+        for label, action in (
+            ("Criar processo", create),
+            ("Encerrar", lambda: f"Processo encerrado: {self.fs.memory.terminate(values['Processo'].get()).name}"),
+            ("Traduzir", lambda: render_translation(self.fs.memory.translate(values["Processo"].get(), int(values["Página"].get())))),
+            ("Executar instrução", execute), ("Compactar reservada", compact),
+            ("Aplicar algoritmo", algorithm),
+        ):
+            ttk.Button(buttons, text=label, command=lambda action=action: run(action)).pack(side="left", padx=3)
+
+        def monitor():
+            if not win.winfo_exists():
+                return
+            refresh()
+            self.after(2000, monitor)
+        refresh()
+        self.after(2000, monitor)
 
     def show_storage(self):
         if not self._require_kernel("consulta do armazenamento físico"):

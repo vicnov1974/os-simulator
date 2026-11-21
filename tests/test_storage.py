@@ -246,7 +246,8 @@ def test_shell_storage_commands_and_invalid_input(capsys):
 @pytest.mark.parametrize("example", sorted((Path(__file__).resolve().parents[1] / "examples").glob("*.txt")))
 def test_documented_example_scripts(example):
     root = Path(__file__).resolve().parents[1]
-    result = subprocess.run([sys.executable, "main.py", "--script", str(example)],
+    options = ["--ram-size", "4104KB"] if example.name.startswith("09_") else []
+    result = subprocess.run([sys.executable, "main.py", *options, "--script", str(example)],
                             cwd=root, capture_output=True, encoding="utf-8",
                             env=dict(os.environ, PYTHONIOENCODING="utf-8"), timeout=30)
     assert result.returncode == 0, result.stderr
@@ -260,6 +261,12 @@ def test_documented_example_scripts(example):
         assert "Hash do bloco" in result.stdout and "Assinatura maliciosa" in result.stdout
         assert "Registro privado" in result.stdout
         assert all(secret not in result.stdout for secret in ("raiz-demo", "carlos-demo", "MinhaChave123"))
+    elif example.name.startswith("08_"):
+        assert result.stdout.count("Erro:") == 1
+        assert "Erro: fragmentação externa" in result.stdout
+        assert "Fragmentação Externa: 0 Bytes" in result.stdout
+        assert "[1.5 MB a 2 MB]" in result.stdout
+        assert "Kernel_Grande | critical" in result.stdout
     else:
         assert "Erro:" not in result.stdout
     if example.name.startswith("04_"):
@@ -269,6 +276,11 @@ def test_documented_example_scripts(example):
     if example.name.startswith("06_"):
         assert "valor 15" in result.stdout
         assert "Coletas de lixo: 0" not in result.stdout.split("valor 15")[-1]
+    if example.name.startswith("09_"):
+        assert "Substituição LRU" in result.stdout and "Substituição SECOND-CHANCE" in result.stdout
+        assert result.stdout.count("Dados da página (4096 Bytes): b'dados preservados no swap") == 3
+        assert "[HIT]" in result.stdout and "[S]" in result.stdout
+        assert "2048 Bytes" in result.stdout and "Arquivo das etapas anteriores" in result.stdout
 
 
 @pytest.mark.parametrize("device", ["hdd", "ssd", "raid"])

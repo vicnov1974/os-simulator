@@ -17,7 +17,7 @@ class NoSpaceError(DiskError):
 
 @dataclass(frozen=True, eq=False)
 class BlockOwner:
-    """Dono de um bloco. kind: DIR_META | FILE_INODE | DATA."""
+    """Dono de um bloco. kind: DIR_META | FILE_INODE | DATA | SWAP."""
     node: object
     kind: str
     index: int = 0          # posição do bloco dentro do arquivo (kind == DATA)
@@ -133,9 +133,11 @@ class Disk:
         replacement.flush()
         self.storage = replacement
 
-    def reset(self) -> None:
+    def reset(self, preserve_swap=False) -> None:
+        preserved = [owner if preserve_swap and owner is not None and owner.kind == "SWAP"
+                     else None for owner in self.owner]
         for b, owner in enumerate(self.owner):
-            if owner is not None:
+            if owner is not None and preserved[b] is None:
                 self.storage.write(b, b"", "[reset]")
-        self.owner = [None] * self.total_blocks
-        self.raw = {}
+        self.owner = preserved
+        self.raw = {b: data for b, data in self.raw.items() if preserved[b] is not None}

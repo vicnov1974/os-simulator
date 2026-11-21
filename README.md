@@ -1,6 +1,6 @@
 # Simulador de Sistema Operacional Modular
 
-Projeto em etapas incrementais. Inclui o sistema de arquivos da **Etapa 1**, o gerenciamento de armazenamento da **Etapa 2** e os controles de segurança da **Etapa 3**.
+Projeto em etapas incrementais. Inclui o sistema de arquivos da **Etapa 1**, o gerenciamento de armazenamento da **Etapa 2**, os controles de segurança da **Etapa 3** e a memória híbrida da **Etapa 4**.
 
 - **Linguagem:** Python 3.9+ com `cryptography` para criptografia autenticada.
 - **Interfaces:** shell interativo (REPL), scripts de comandos e **interface gráfica (Tkinter) estilo Windows Explorer**
@@ -292,3 +292,110 @@ Arquivos novos recebem modo `644` e diretórios recebem `755`. O proprietário �
 Os argumentos `--password` e `--key` permitem automatizar exemplos com credenciais fictícias. Prefira a entrada oculta ao usar uma senha ou chave pessoal. A criptografia protege o conteúdo gravado no dispositivo simulado. Converter um arquivo existente não é uma operação de apagamento seguro das páginas antigas de um SSD.
 
 Na GUI, o menu **Segurança** oferece autenticação, cadastro, ACL, criptografia, varredura e auditoria. Selecione um arquivo para alterar permissões ou criptografia. Ao abrir um arquivo criptografado, informe a chave no diálogo.
+
+## Etapa 4 — Gerenciamento de memória híbrida
+
+`osim/memory.py` implementa processos, tabela de páginas, tradução de endereços, substituição e diagnóstico de RAM. O mesmo `FileSystem` mantém a memória utilizada pelo shell e pela GUI. As operações de arquivos, segurança, SSD, RAID e escalonamento das etapas anteriores continuam disponíveis.
+
+```text
+Shell / GUI -> FileSystem.memory -> MemoryManager
+                                  ├── RAM reservada: núcleo + processos críticos contíguos
+                                  ├── RAM dinâmica: molduras de processos normais
+                                  └── Swap -> Disk compartilhado -> HDD / SSD / RAID
+```
+
+### Configuração e exemplos executáveis
+
+```bash
+# Exemplo 4.1: fragmentação externa, falha de alocação e compactação.
+python3 main.py --script examples/08_memoria_reservada.txt
+
+# Exemplo 4.2: RAM dinâmica pequena para provocar substituições reais.
+python3 main.py --ram-size 4104KB --script examples/09_memoria_virtual.txt
+
+# Mesma configuração disponível na GUI.
+python3 gui.py --ram-size 4104KB --page-algorithm second-chance
+```
+
+As opções abaixo existem nos dois pontos de entrada:
+
+| Opção | Padrão | Efeito |
+|---|---|---|
+| `--ram-size` | `16MB` | Capacidade física total da RAM |
+| `--reserved-size` | `4MB` | Área contígua exclusiva do núcleo e processos críticos |
+| `--kernel-size` | `1MB` | Núcleo base fixo no início da área reservada |
+| `--page-size` | `4KB` | Tamanho de cada página lógica e moldura física |
+| `--page-algorithm` | `lru` | `lru` ou `second-chance` |
+| `--memory-report-every` | `5` | Intervalo de operações de memória para relatórios periódicos |
+
+O núcleo deve ter tamanho positivo e caber na região reservada, que deve ser menor que a RAM total. A região reservada e a dinâmica devem ser múltiplas do tamanho da página. Os tamanhos usam a convenção binária do projeto: 1KB = 1024 Bytes. A configuração é definida ao iniciar a simulação; o algoritmo pode ser alterado durante a execução.
+
+### Área reservada, fragmentação externa e compactação
+
+```text
+create_process --name Kernel_DiskDriver --size 512KB --type critical
+create_process --name Kernel_NetDriver --size 1024KB --type critical
+create_process --name Kernel_CryptoEngine --size 512KB --type critical
+terminate_process --name Kernel_NetDriver
+memory_status --reserved
+memory_compact --reserved
+```
+
+Processos críticos usam **first-fit contíguo**, sem tabela de páginas ou swap. A capacidade da região permanece fixa; os blocos dos processos têm o tamanho solicitado. O mapa mostra intervalos de bytes `[início, fim)`, lacunas, consumo, total livre, maior bloco contíguo e fragmentação externa (total livre menos o maior bloco). No exemplo, os 2MB livres ficam em duas lacunas de 1MB; uma requisição de 1536KB falha até a compactação. A rotina preserva o núcleo no endereço zero, mantém os PIDs e atualiza os endereços dos blocos móveis, reunindo todo o espaço livre no final. A realocação é simulada pelo mapa de blocos dos processos críticos.
+
+### Paginação por demanda e tradução
+
+```text
+create_process --name App_Navegador --size 10KB --type normal
+translate_address --process App_Navegador --page 1
+translate_address --process App_Navegador --page 1 --offset 128
+execute_step --process App_Navegador --instruction "STORE_DATA Página 0 texto"
+execute_step --process App_Navegador --instruction "LOAD_DATA Página 2"
+memory_status --virtual --details
+```
+
+O processo de 10KB tem três páginas: 4096, 4096 e 2048 bytes válidos. Sua fragmentação interna virtual é de **2048 Bytes**. A criação monta a tabela sem ocupar RAM nem disco. A primeira referência a uma página gera **page fault** e uma página zerada; referências posteriores à página residente são **HIT**. Assim, para obter o HIT do exemplo 4.2, é necessário acessar a página antes. Uma página anteriormente removida é lida do swap, recuperando seus bytes.
+
+As molduras exibidas usam numeração física global, incluindo o deslocamento da área reservada. A fórmula é `endereço físico = moldura física × tamanho da página + deslocamento`. A página e o deslocamento são validados contra o tamanho real do processo, inclusive na última página parcial. `translate_address` representa uma referência e atualiza o histórico de uso. Processos críticos não aceitam tradução por páginas.
+
+`execute_step` simula uma instrução de memória da CPU: `LOAD_DATA Página N` lê a página e `STORE_DATA Página N texto` grava bytes UTF-8 a partir do início dela, preservando os demais bytes. A gravação deve caber nos bytes válidos da página. A saída mostra os primeiros 64 bytes. A simulação não inclui escalonamento de CPU nem execução de binários.
+
+### Page faults, swap, LRU e Segunda Chance
+
+```text
+memory_algorithm lru
+memory_algorithm second-chance
+io_status
+io_flush
+memory_reports
+terminate_process --name App_Navegador
+```
+
+Quando não há moldura livre, a substituição é **global entre processos normais**:
+
+- **LRU:** remove a página com a referência bem-sucedida mais antiga. O relógio é lógico, incrementado a cada referência, para reproduzir os resultados sem depender de milissegundos reais.
+- **Segunda Chance:** percorre as molduras circularmente; páginas com bit de referência 1 recebem uma chance, têm o bit limpo e a varredura continua. A primeira página com bit 0 é substituída. Toda referência bem-sucedida coloca o bit em 1.
+
+O diagnóstico da substituição identifica algoritmo, PID, página removida, último acesso, blocos gravados no swap e moldura de destino. O swap grava **bytes reais** em blocos `SWAP` do mesmo `Disk` usado pelos arquivos. Uma página pode ocupar vários blocos de disco; o último recebe preenchimento quando necessário. As operações passam pelas filas e dispositivos da Etapa 2, inclusive SSD e RAID. O mapa do disco identifica esses blocos com `[S]`.
+
+Páginas nunca tocadas são criadas zeradas sob demanda. Somente páginas removidas precisam de espaço no swap; páginas residentes não mantêm uma cópia de backing. Ao carregar uma página do swap, seus blocos são liberados ou reutilizados para salvar a vítima. Sem espaço suficiente ou com falha de E/S, o acesso é recusado e a RAM, tabelas e política de substituição permanecem no estado anterior. Encerrar o processo libera suas molduras e blocos de swap.
+
+Arquivos e swap disputam a capacidade do disco configurado por `--blocks` e `--block-size`. A compactação do disco e a troca da estratégia dos arquivos preservam os blocos de swap em seus endereços; por isso podem restar lacunas entre arquivos quando há swap ativo. `disk_config` migra também o swap para o novo dispositivo. `format` exige encerrar todos os processos para evitar apagar seu backing. `memory_compact --reserved` compacta somente a RAM reservada.
+
+### Diagnóstico periódico, interface e segurança
+
+`memory_status` exibe as duas regiões; `--reserved` e `--virtual` filtram a saída. `--details` acrescenta tabelas de páginas com moldura/swap, bit de referência e último acesso. O relatório distingue bytes virtuais solicitados, capacidade arredondada em páginas, RAM residente, desperdício interno virtual e residente, consumo reservado, fragmentação externa e contadores de hits, faults e substituições.
+
+A cada cinco operações bem-sucedidas de criação, encerramento, compactação ou referência, o gerenciador captura um relatório de fragmentação e ocupação. O intervalo é configurável, o histórico guarda as últimas 20 capturas e `memory_reports` o exibe. O shell imprime as capturas automaticamente no modo kernel. O intervalo é medido em operações da simulação.
+
+Na GUI, **Memória > RAM híbrida, processos e paginação...** oferece criação/encerramento, tradução, instruções, compactação e seleção de algoritmo. O painel mostra mapas, tabelas, execução e relatórios periódicos; atualiza a consulta a cada dois segundos. O diagnóstico principal resume o consumo de RAM e memória virtual. Clicar em um bloco de swap abre o painel de memória.
+
+Os processos pertencem ao usuário autenticado na Etapa 3. Usuários comuns podem criar, acessar e encerrar seus próprios processos normais no shell. Processos críticos, relatórios globais, compactação, seleção de algoritmo e o painel administrativo da GUI exigem `MODO_KERNEL`. A troca de sessão fecha o painel; tentativas de acesso a processos alheios são negadas e auditadas. O swap é interno ao simulador e não aparece na árvore de arquivos. Como nas etapas anteriores, todo o estado simulado permanece em memória do programa e não persiste entre execuções.
+
+### Testes da Etapa 4
+
+```bash
+python3 -m pytest -q
+```
+
+`tests/test_memory.py` cobre os exemplos de fragmentação, first-fit, isolamento das regiões, tradução com deslocamento, limites da última página, demanda, LRU global, bits e ponteiro da Segunda Chance, preservação de bytes em múltiplas substituições, tamanhos distintos de página/bloco, HDD/SSD/RAID, concorrência com arquivos, migração, compactação do disco, disco cheio, rollback de E/S, encerramento, sessões e relatórios periódicos. `tests/test_gui.py` exercita também os controles do painel, desenho do swap e fechamento por troca de sessão quando há display.

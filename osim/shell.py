@@ -12,6 +12,7 @@ from .utils import format_size, parse_size
 from .scheduling import schedule, render_schedule
 from .storage import render_io, render_storage
 from .security import SecurityError, describe_acl, render_scan
+from .memory import MemoryError, render_memory, render_process, render_translation
 
 HELP = """\
 COMANDOS (caminhos absolutos '/a/b' ou relativos 'a/b', './a', '../a')
@@ -69,6 +70,17 @@ COMANDOS (caminhos absolutos '/a/b' ou relativos 'a/b', './a', '../a')
   cat | write | write_file | append | resize: --ask-key para arquivo criptografado
   antivirus_scan [caminho] | audit_log
   corrupt_block <arq> [índice]  simula adulteração de bloco (índice a partir de 0)
+
+ Memória (Etapa 4)
+  create_process --name <nome> --size 10KB --type <critical|normal>
+  terminate_process --name <nome>
+  translate_address --process <nome> --page <n> [--offset <bytes>]
+  execute_step --process <nome> --instruction "LOAD_DATA Página 2"
+  execute_step --process <nome> --instruction "STORE_DATA Página 2 texto"
+  memory_status [--reserved|--virtual] [--details]
+  memory_compact --reserved    compacta a área contígua da RAM
+  memory_algorithm <lru|second-chance>
+  memory_reports              histórico periódico de fragmentação
 
   help                        esta ajuda
   exit | quit                 sai
@@ -165,6 +177,10 @@ class Shell:
             "exec_file": self.c_exec_file, "encrypt_file": self.c_encrypt_file,
             "decrypt_file": self.c_decrypt_file, "antivirus_scan": self.c_antivirus_scan,
             "audit_log": self.c_audit_log, "corrupt_block": self.c_corrupt_block,
+            "create_process": self.c_create_process, "terminate_process": self.c_terminate_process,
+            "translate_address": self.c_translate_address, "execute_step": self.c_execute_step,
+            "memory_status": self.c_memory_status, "memory_compact": self.c_memory_compact,
+            "memory_algorithm": self.c_memory_algorithm, "memory_reports": self.c_memory_reports,
         }
 
     @property
@@ -190,10 +206,90 @@ class Shell:
         try:
             if cmd not in ("help", "login", "logout", "whoami"):
                 self.fs.security.require_session()
+            before = self.fs.memory.operations
             handler(args)
-        except (FSError, DiskError, SecurityError) as exc:
+            memory = self.fs.memory
+            if memory.operations != before and memory.operations % memory.report_every == 0 and self.fs.security.is_kernel:
+                print(self._memory_snapshot(*memory.periodic_reports[-1]))
+        except (FSError, DiskError, SecurityError, MemoryError) as exc:
             print(f"Erro: {exc}")
         return True
+
+    # ---- memória -------------------------------------------------------
+    @staticmethod
+    def _memory_options(args, required, optional=(), flags=()):
+        pos, opts = parse_opts(args, valued=required + optional, flags=flags)
+        if pos or any(key not in opts for key in required):
+            raise FSError("informe " + " ".join(required) + " com seus valores")
+        return opts
+
+    def c_create_process(self, args):
+        opts = self._memory_options(args, ("--name", "--size", "--type"))
+        process = self.fs.memory.create(opts["--name"], _size(opts["--size"]), opts["--type"])
+        print(render_process(process, self.fs.memory.page_size))
+
+    def c_terminate_process(self, args):
+        opts = self._memory_options(args, ("--name",))
+        process = self.fs.memory.terminate(opts["--name"])
+        label = "CRÍTICO" if process.kind == "critical" else "NORMAL"
+        print(f"[ENCERRAMENTO DE PROCESSO {label}] '{process.name}' finalizado.")
+        if process.kind == "critical":
+            print(f"Área de {format_size(process.size)} no intervalo "
+                  f"[{format_size(process.start)} a {format_size(process.start + process.size)}] liberada.")
+        else:
+            print("Molduras e blocos de swap liberados.")
+
+    def c_translate_address(self, args):
+        opts = self._memory_options(args, ("--process", "--page"), ("--offset",))
+        try:
+            page, offset = int(opts["--page"]), int(opts.get("--offset", 0))
+        except ValueError:
+            raise FSError("página e deslocamento devem ser inteiros") from None
+        print(render_translation(self.fs.memory.translate(opts["--process"], page, offset)))
+
+    def c_execute_step(self, args):
+        opts = self._memory_options(args, ("--process", "--instruction"))
+        result, data = self.fs.memory.execute(opts["--process"], opts["--instruction"])
+        print("[CPU - REFERÊNCIA DE MEMÓRIA EM EXECUÇÃO]")
+        print(render_translation(result))
+        print(f"Dados da página ({len(data)} Bytes): {data[:64]!r}")
+
+    def c_memory_status(self, args):
+        opts = self._memory_options(args, (), flags=("--reserved", "--virtual", "--details"))
+        if "--reserved" in opts and "--virtual" in opts:
+            raise FSError("use apenas --reserved ou --virtual")
+        region = "reserved" if "--reserved" in opts else "virtual" if "--virtual" in opts else None
+        print(render_memory(self.fs.memory, region, "--details" in opts))
+
+    def c_memory_compact(self, args):
+        if args != ["--reserved"]:
+            raise FSError("uso: memory_compact --reserved")
+        print("[EXECUTANDO COMPACTAÇÃO DA ÁREA RESERVADA DA RAM]")
+        for name, old, new, size in self.fs.memory.compact():
+            print(f"{name}: [{format_size(old)} a {format_size(old + size)}] -> "
+                  f"[{format_size(new)} a {format_size(new + size)}]")
+        print(render_memory(self.fs.memory, "reserved"))
+
+    def c_memory_algorithm(self, args):
+        if len(args) != 1:
+            raise FSError("uso: memory_algorithm <lru|second-chance>")
+        self.fs.memory.set_algorithm(args[0])
+        print(f"Substituição de páginas: {self.fs.memory.algorithm.upper()}")
+
+    @staticmethod
+    def _memory_snapshot(operation, stats):
+        return (f"[RELATÓRIO PERIÓDICO DE MEMÓRIA - operação {operation}] "
+                f"Fragmentação Interna: {stats['internal']} Bytes "
+                f"(RAM: {stats['resident_internal']} Bytes); "
+                f"Fragmentação Externa: {stats['external']} Bytes; "
+                f"RAM reservada: {stats['reserved_used']} Bytes; dinâmica: {stats['resident_bytes']} Bytes")
+
+    def c_memory_reports(self, args):
+        self.fs.security.require_kernel("relatórios periódicos de memória")
+        if args:
+            raise FSError("uso: memory_reports")
+        print("\n".join(self._memory_snapshot(op, stats) for op, stats in self.fs.memory.periodic_reports)
+              or "Nenhum relatório periódico de memória ainda.")
 
     # ---- navegação -----------------------------------------------------
     def c_help(self, args):
