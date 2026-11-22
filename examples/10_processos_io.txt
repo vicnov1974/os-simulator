@@ -1,0 +1,16 @@
+# Etapa 5: prioridades, Round-Robin, E/S e RAM dinâmica.
+# Use --ram-size 24KB --reserved-size 8KB --kernel-size 4KB --blocks 64
+write_file /dados.txt "As etapas anteriores continuam disponíveis."
+create_process --name App_Web --burst 8ms --priority 1 --size 32KB --type normal --syscall "read_disk at 3ms (duration: 4ms)" --seed 2
+create_process --name App_Render --burst 5ms --priority 2 --size 20KB --syscall random --seed 42
+create_process --name App_Backend --burst 4ms --priority 1 --size 16KB
+run_simulation --process App_Web --steps 3
+process_status
+ram_status
+schedule --algorithm Priority_RR --quantum 2ms
+system_metrics
+memory_status --virtual --details
+read_file /dados.txt
+terminate_process --name App_Web
+terminate_process --name App_Render
+terminate_process --name App_Backend

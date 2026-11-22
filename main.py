@@ -12,7 +12,7 @@ from osim.utils import parse_size
 from osim.storage import add_storage_arguments, storage_from_args
 from osim.memory import add_memory_arguments, memory_from_args
 
-BANNER = "Simulador de SO - Etapas 1 a 4: Arquivos, Armazenamento, Segurança e Memória  (digite 'help')"
+BANNER = "Simulador de SO - Etapas 1 a 5: Arquivos, Armazenamento, Segurança, Memória e Processos  (digite 'help')"
 
 
 def main() -> int:

@@ -1,0 +1,9 @@
+# Threads compartilham a memória e a prioridade do processo.
+create_process --name App_Render --burst 4ms --priority 1 --size 16KB
+create_thread --process App_Render --name T2 --burst 3ms
+thread_action --process App_Render --thread T1 --at 0ms --operation lock --mutex Buffer_Video
+thread_action --process App_Render --thread T1 --at 2ms --operation unlock --mutex Buffer_Video
+thread_action --process App_Render --thread T2 --at 0ms --operation lock --mutex Buffer_Video
+schedule --algorithm Priority_RR --quantum 1ms
+system_metrics
+terminate_process --name App_Render

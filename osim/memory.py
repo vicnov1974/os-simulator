@@ -69,6 +69,8 @@ class MemoryManager:
         self.clock = self.hand = self.faults = self.hits = self.evictions = 0
         self.operations = 0
         self.periodic_reports = []
+        from .processes import ProcessSimulator
+        self.cpu = ProcessSimulator(self)
 
     @property
     def security(self):
@@ -155,6 +157,7 @@ class MemoryManager:
             if page.frame is not None:
                 del self.frames[page.frame]
         del self.processes[name]
+        self.cpu.cancel(name)
         self.security.record("encerramento de processo", name, "OK")
         self._tick()
         return process

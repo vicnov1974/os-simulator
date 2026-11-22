@@ -84,6 +84,49 @@ def test_edit_save_and_strategy_switch(app):
     assert app.fs.read("/n.txt") == b"novo conteudo"
 
 
+@pytest.mark.parametrize("geometry", ["640x420", "640x240"])
+@pytest.mark.parametrize("binary", [False, True])
+def test_editor_save_button_stays_visible_and_saves(app, geometry, binary):
+    app.new_file("editar.txt", "10KB" if binary else "", "" if binary else "original")
+    app.open_editor(app.fs.resolve("/editar.txt"))
+    win = app.session_windows[-1]
+    win.geometry(geometry)
+    app.update()
+    text = next(w for w in win.winfo_children() if isinstance(w, tk.Text))
+    toolbar = next(w for w in win.winfo_children() if w.winfo_class() == "TFrame")
+    save = next(w for w in toolbar.winfo_children() if w.cget("text") == "Salvar")
+    assert toolbar.winfo_height() >= save.winfo_reqheight()
+    assert save.winfo_ismapped()
+    assert toolbar.winfo_y() + toolbar.winfo_height() <= win.winfo_height()
+    assert text.winfo_y() + text.winfo_height() <= toolbar.winfo_y()
+    text.delete("1.0", "end")
+    text.insert("1.0", "alteração salva")
+    save.invoke()
+    assert app.fs.read("/editar.txt") == "alteração salva".encode()
+    assert not win.winfo_exists() and not app.errors
+
+
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_editor_ctrl_s_saves_text_and_preserves_encryption(app, monkeypatch, encrypted):
+    app.new_file("atalho.txt", "", "original")
+    if encrypted:
+        app.fs.encrypt_file("/atalho.txt", "chave-teste")
+        monkeypatch.setattr(app, "_ask_secret", lambda label: "chave-teste")
+    app.open_editor(app.fs.resolve("/atalho.txt"))
+    win = app.session_windows[-1]
+    text = next(w for w in win.winfo_children() if isinstance(w, tk.Text))
+    text.delete("1.0", "end")
+    text.insert("1.0", "salvo pelo atalho")
+    win.focus_force()
+    text.focus_force()
+    app.update()
+    text.event_generate("<Control-s>")
+    app.update()
+    assert not win.winfo_exists() and not app.errors
+    assert app.fs.read("/atalho.txt", "chave-teste" if encrypted else None) == b"salvo pelo atalho"
+    assert bool(app.fs.resolve("/atalho.txt").encryption) == encrypted
+
+
 def test_format(app):
     app.new_folder("x")
     assert app.format_disk("512B", "16", "linked")
@@ -165,3 +208,54 @@ def test_session_switch_closes_privileged_windows_and_hides_restricted_paths(app
     assert app.login("root", "root-test")
     assert app.navigate("/restrito/subpasta")
     assert rows(app) == ["sigilo"]
+
+
+def test_process_panel_io_threads_metrics_and_session_cleanup(app):
+    app.show_processes()
+    app.update()
+    win = app.session_windows[-1]
+    values = win.process_values
+
+    def descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from descendants(child)
+
+    buttons = {w.cget("text"): w for w in descendants(win) if w.winfo_class() == "TButton"}
+    buttons["Criar com perfil I/O"].invoke()
+    buttons["Criar thread"].invoke()
+    values["Thread"].set("T1")
+    buttons["Agendar mutex"].invoke()
+    values["Thread"].set("T2")
+    buttons["Agendar mutex"].invoke()
+    values["Quantum (ms)"].set("1")
+    buttons["Avançar passos"].invoke()
+    assert app.fs.memory.cpu.clock == 1
+    buttons["Executar até 1000ms"].invoke()
+    buttons["Atualizar"].invoke()
+    process = app.fs.memory.cpu.processes["App_Web"]
+    assert process.state == "CONCLUÍDO" and process.executed == 11
+    assert not app.errors
+    texts = [w.get("1.0", "end") for w in descendants(win) if isinstance(w, tk.Text)]
+    assert any("Tempo Médio de Espera" in text for text in texts)
+    assert any("BLOQUEADO (Mutex" in text and "SYSCALL" in text for text in texts)
+    assert any("Moldura" in text and "LRU" in text for text in texts)
+    buttons["Encerrar processo"].invoke()
+    assert not app.fs.memory.processes and not app.errors
+    app.fs.security.add_user("ana", "users", "test-ana")
+    assert app.login("ana", "test-ana")
+    assert not win.winfo_exists()
+    app.show_processes()
+    assert "MODO_KERNEL" in app.errors[-1]
+
+
+def test_process_panel_invalid_profile_preserves_memory(app):
+    app.show_processes()
+    app.update()
+    win = app.session_windows[-1]
+    win.process_values["Burst (ms)"].set("invalido")
+    for frame in win.winfo_children():
+        for child in frame.winfo_children():
+            if child.winfo_class() == "TButton" and child.cget("text") == "Criar com perfil I/O":
+                child.invoke()
+    assert app.errors and not app.fs.memory.processes

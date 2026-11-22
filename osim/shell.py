@@ -82,6 +82,20 @@ COMANDOS (caminhos absolutos '/a/b' ou relativos 'a/b', './a', '../a')
   memory_algorithm <lru|second-chance>
   memory_reports              histórico periódico de fragmentação
 
+ Processos e CPU (Etapa 5; execução global requer modo kernel)
+  create_process --name <nome> --burst 8ms [--priority 1] [--size 16KB]
+                 [--type normal|critical] [--seed 0]
+                 [--syscall "read_disk at 3ms (duration: 4ms)"|random]
+  schedule --algorithm Priority_RR --quantum 2ms
+                              configura e executa até concluir ou detectar deadlock
+  run_simulation [--process <nome>] [--steps 3]
+                              avança o relógio global; --process é alvo de parada
+  process_status | system_metrics | ram_status
+  create_thread --process <nome> --name T2 --burst 3ms
+  thread_action --process <nome> --thread T1 --at 0ms
+                --operation lock|unlock --mutex Buffer_Video
+                              configura ações antes de executar; mutex global FIFO
+
   help                        esta ajuda
   exit | quit                 sai
 """
@@ -181,6 +195,10 @@ class Shell:
             "translate_address": self.c_translate_address, "execute_step": self.c_execute_step,
             "memory_status": self.c_memory_status, "memory_compact": self.c_memory_compact,
             "memory_algorithm": self.c_memory_algorithm, "memory_reports": self.c_memory_reports,
+            "schedule": self.c_schedule, "run_simulation": self.c_run_simulation,
+            "process_status": self.c_process_status, "system_metrics": self.c_process_status,
+            "ram_status": self.c_ram_status, "create_thread": self.c_create_thread,
+            "thread_action": self.c_thread_action,
         }
 
     @property
@@ -224,9 +242,59 @@ class Shell:
         return opts
 
     def c_create_process(self, args):
-        opts = self._memory_options(args, ("--name", "--size", "--type"))
-        process = self.fs.memory.create(opts["--name"], _size(opts["--size"]), opts["--type"])
+        opts = self._memory_options(args, ("--name",),
+                                    ("--size", "--type", "--burst", "--priority", "--syscall", "--seed"))
+        if "--burst" in opts:
+            scheduled = self.fs.memory.cpu.create(
+                opts["--name"], opts["--burst"], opts.get("--priority", 1),
+                _size(opts["--size"]) if "--size" in opts else None,
+                opts.get("--type", "normal"), opts.get("--syscall"), opts.get("--seed", 0))
+            process = scheduled.memory
+            print(f"[CRIAÇÃO DE PROCESSO] PID: {process.pid} | Nome: {process.name} | "
+                  f"Prioridade: {scheduled.priority} | Burst: {scheduled.burst}ms")
+            for syscall in scheduled.syscalls:
+                print(f"Syscall/I/O: {syscall.operation} em CPU={syscall.at}ms "
+                      f"(Duração do Bloqueio: {syscall.duration}ms)")
+            print(f"Estado Inicial: {scheduled.state}")
+        else:
+            if "--size" not in opts or "--type" not in opts or any(k in opts for k in ("--priority", "--syscall", "--seed")):
+                raise FSError("informe --burst ou --size e --type (comando da Etapa 4)")
+            process = self.fs.memory.create(opts["--name"], _size(opts["--size"]), opts["--type"])
         print(render_process(process, self.fs.memory.page_size))
+
+    def c_schedule(self, args):
+        opts = self._memory_options(args, ("--algorithm", "--quantum"))
+        cpu = self.fs.memory.cpu
+        cpu.configure(opts["--quantum"], opts["--algorithm"])
+        print(cpu.run())
+        print(cpu.render_ram())
+        print(cpu.render())
+
+    def c_run_simulation(self, args):
+        opts = self._memory_options(args, (), ("--process", "--steps"))
+        cpu = self.fs.memory.cpu
+        print(cpu.run(opts.get("--steps"), opts.get("--process")))
+        print(cpu.render_ram())
+        print(cpu.render())
+
+    def c_process_status(self, args):
+        self._memory_options(args, ())
+        print(self.fs.memory.cpu.render())
+
+    def c_ram_status(self, args):
+        self._memory_options(args, ())
+        print(self.fs.memory.cpu.render_ram())
+
+    def c_create_thread(self, args):
+        opts = self._memory_options(args, ("--process", "--name", "--burst"))
+        self.fs.memory.cpu.create_thread(opts["--process"], opts["--name"], opts["--burst"])
+        print(f"Thread {opts['--name']} criada em {opts['--process']} (PRONTO).")
+
+    def c_thread_action(self, args):
+        opts = self._memory_options(args, ("--process", "--thread", "--at", "--operation", "--mutex"))
+        self.fs.memory.cpu.thread_action(opts["--process"], opts["--thread"], opts["--at"],
+                                         opts["--operation"], opts["--mutex"])
+        print("Ação de mutex agendada.")
 
     def c_terminate_process(self, args):
         opts = self._memory_options(args, ("--name",))
