@@ -79,7 +79,7 @@ class App(tk.Tk):
 
     def __init__(self, fs: FileSystem = None):
         super().__init__()
-        self.title("Simulador de SO - Arquivos, Armazenamento, Segurança e Memória")
+        self.title("Simulador de SO - Arquivos, Armazenamento, Segurança, Memória e Processos")
         self.geometry("1200x800")
         self.minsize(950, 640)
         self.fs = fs or FileSystem(Disk(4096, 64), IndexedAllocation())
@@ -134,6 +134,9 @@ class App(tk.Tk):
         memory_menu = tk.Menu(m, tearoff=0)
         memory_menu.add_command(label="RAM híbrida, processos e paginação...", command=self.show_memory)
         m.add_cascade(label="Memória", menu=memory_menu)
+        processes = tk.Menu(m, tearoff=0)
+        processes.add_command(label="CPU, threads, syscalls e métricas...", command=self.show_processes)
+        m.add_cascade(label="Processos", menu=processes)
         security = tk.Menu(m, tearoff=0)
         for label, command in (
             ("Entrar...", self.ask_login), ("Sair da sessão", self.logout),
@@ -149,7 +152,7 @@ class App(tk.Tk):
         m.add_cascade(label="Segurança", menu=security)
         h = tk.Menu(m, tearoff=0)
         h.add_command(label="Sobre", command=lambda: messagebox.showinfo(
-            "Sobre", "Simulador de SO Modular - Etapas 1 a 4\nArquivos, armazenamento, segurança e memória.", parent=self))
+            "Sobre", "Simulador de SO Modular - Etapas 1 a 5\nArquivos, armazenamento, segurança, memória e processos.", parent=self))
         m.add_cascade(label="Ajuda", menu=h)
         self.config(menu=m)
 
@@ -596,6 +599,104 @@ class App(tk.Tk):
 
     def raid_action(self, action, number):
         return self._try(self.fs.raid_action, action, number)
+
+    def show_processes(self):
+        if not self._require_kernel("gerenciamento gráfico de processos"):
+            return
+        win = self._session_window("Processos, CPU e concorrência")
+        win.geometry("1120x800")
+        cpu = self.fs.memory.cpu
+        values = {}
+
+        def form(title, defaults, choices=None):
+            group = ttk.LabelFrame(win, text=title, padding=6)
+            group.pack(fill="x", padx=6, pady=3)
+            choices = choices or {}
+            for col, (label, default) in enumerate(defaults.items()):
+                ttk.Label(group, text=label).grid(row=0, column=col, sticky="w", padx=3)
+                value = values[label] = tk.StringVar(value=default)
+                if label in choices:
+                    entry = ttk.Combobox(group, textvariable=value, values=choices[label], state="readonly", width=12)
+                else:
+                    entry = ttk.Entry(group, textvariable=value, width=42 if label == "Syscall" else 13)
+                entry.grid(row=1, column=col, padx=3, sticky="ew")
+                group.columnconfigure(col, weight=1)
+
+        form("Criação de processo (1 = prioridade mais alta)",
+             {"Nome": "App_Web", "Burst (ms)": "8", "Prioridade": "1", "Tipo CPU": "normal", "RAM": "16KB"},
+             {"Tipo CPU": ("normal", "critical")})
+        form("Perfil de E/S (tempo de CPU acumulado); separe várias syscalls por ;",
+             {"Syscall": "read_disk at 3ms (duration: 4ms)", "Seed": "0", "Quantum (ms)": "2", "Passos (ms)": "1"})
+        form("Threads e mutex (configure antes de executar; T1 já existe)",
+             {"Thread": "T2", "Burst thread": "3", "Instante thread": "0", "Operação": "lock", "Mutex": "Buffer_Video"},
+             {"Operação": ("lock", "unlock")})
+        ttk.Label(win, text="Syscall: none, random ou read_disk at 3ms (duration: 4ms). "
+                  "Cada instrução custa 1ms; mutex libera automaticamente ao concluir a thread.").pack(anchor="w", padx=8)
+        buttons = ttk.Frame(win, padding=4)
+        buttons.pack(fill="x")
+        pages = ttk.Notebook(win)
+        pages.pack(fill="both", expand=True, padx=6, pady=4)
+
+        def text_page(title):
+            frame = ttk.Frame(pages)
+            pages.add(frame, text=title)
+            text = tk.Text(frame, wrap="none", font="TkFixedFont")
+            vertical = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+            horizontal = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
+            text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+            frame.rowconfigure(0, weight=1)
+            frame.columnconfigure(0, weight=1)
+            text.grid(row=0, column=0, sticky="nsew")
+            vertical.grid(row=0, column=1, sticky="ns")
+            horizontal.grid(row=1, column=0, sticky="ew")
+            return text
+
+        status = text_page("Estados, filas e métricas")
+        ram = text_page("Molduras da RAM")
+        log = text_page("Linha do tempo e eventos")
+
+        def refresh():
+            for widget, content in ((status, cpu.render()), (ram, cpu.render_ram())):
+                widget.configure(state="normal")
+                widget.delete("1.0", "end")
+                widget.insert("1.0", content)
+                widget.configure(state="disabled")
+
+        def value(key):
+            return values[key].get()
+
+        def create():
+            process = cpu.create(value("Nome"), value("Burst (ms)"), value("Prioridade"),
+                                 parse_size(value("RAM")), value("Tipo CPU"), value("Syscall"), value("Seed"))
+            return f"PID {process.memory.pid}: NOVO -> PRONTO; prioridade {process.priority}"
+
+        def execute(all_processes=False):
+            cpu.configure(value("Quantum (ms)"))
+            # Limite por ação mantém a interface responsiva em bursts grandes.
+            return cpu.run(steps=1000 if all_processes else value("Passos (ms)"))
+
+        def run(action):
+            def perform():
+                result = action()
+                log.insert("end", str(result or "Configuração aplicada.") + "\n\n")
+                log.see("end")
+            self._try(perform)
+            refresh()
+
+        actions = (
+            ("Criar com perfil I/O", create),
+            ("Criar thread", lambda: cpu.create_thread(value("Nome"), value("Thread"), value("Burst thread"))),
+            ("Agendar mutex", lambda: cpu.thread_action(value("Nome"), value("Thread"), value("Instante thread"), value("Operação"), value("Mutex"))),
+            ("Avançar passos", execute),
+            ("Executar até 1000ms", lambda: execute(True)),
+            ("Encerrar processo", lambda: self.fs.memory.terminate(value("Nome")).name),
+            ("Atualizar", lambda: "Relatório atualizado."),
+        )
+        for col, (label, action) in enumerate(actions):
+            ttk.Button(buttons, text=label, command=lambda action=action: run(action)).grid(row=col // 4, column=col % 4, padx=3, pady=2)
+        # Atributos de teste/automação seguem a mesma janela vinculada à sessão.
+        win.process_values = values
+        refresh()
 
     def show_memory(self):
         if not self._require_kernel("gerenciamento gráfico da memória"):

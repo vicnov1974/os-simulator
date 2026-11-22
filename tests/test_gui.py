@@ -208,3 +208,54 @@ def test_session_switch_closes_privileged_windows_and_hides_restricted_paths(app
     assert app.login("root", "root-test")
     assert app.navigate("/restrito/subpasta")
     assert rows(app) == ["sigilo"]
+
+
+def test_process_panel_io_threads_metrics_and_session_cleanup(app):
+    app.show_processes()
+    app.update()
+    win = app.session_windows[-1]
+    values = win.process_values
+
+    def descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from descendants(child)
+
+    buttons = {w.cget("text"): w for w in descendants(win) if w.winfo_class() == "TButton"}
+    buttons["Criar com perfil I/O"].invoke()
+    buttons["Criar thread"].invoke()
+    values["Thread"].set("T1")
+    buttons["Agendar mutex"].invoke()
+    values["Thread"].set("T2")
+    buttons["Agendar mutex"].invoke()
+    values["Quantum (ms)"].set("1")
+    buttons["Avançar passos"].invoke()
+    assert app.fs.memory.cpu.clock == 1
+    buttons["Executar até 1000ms"].invoke()
+    buttons["Atualizar"].invoke()
+    process = app.fs.memory.cpu.processes["App_Web"]
+    assert process.state == "CONCLUÍDO" and process.executed == 11
+    assert not app.errors
+    texts = [w.get("1.0", "end") for w in descendants(win) if isinstance(w, tk.Text)]
+    assert any("Tempo Médio de Espera" in text for text in texts)
+    assert any("BLOQUEADO (Mutex" in text and "SYSCALL" in text for text in texts)
+    assert any("Moldura" in text and "LRU" in text for text in texts)
+    buttons["Encerrar processo"].invoke()
+    assert not app.fs.memory.processes and not app.errors
+    app.fs.security.add_user("ana", "users", "test-ana")
+    assert app.login("ana", "test-ana")
+    assert not win.winfo_exists()
+    app.show_processes()
+    assert "MODO_KERNEL" in app.errors[-1]
+
+
+def test_process_panel_invalid_profile_preserves_memory(app):
+    app.show_processes()
+    app.update()
+    win = app.session_windows[-1]
+    win.process_values["Burst (ms)"].set("invalido")
+    for frame in win.winfo_children():
+        for child in frame.winfo_children():
+            if child.winfo_class() == "TButton" and child.cget("text") == "Criar com perfil I/O":
+                child.invoke()
+    assert app.errors and not app.fs.memory.processes

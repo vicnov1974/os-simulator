@@ -1,6 +1,6 @@
 # Simulador de Sistema Operacional Modular
 
-Projeto em etapas incrementais. Inclui o sistema de arquivos da **Etapa 1**, o gerenciamento de armazenamento da **Etapa 2**, os controles de segurança da **Etapa 3** e a memória híbrida da **Etapa 4**.
+Projeto em etapas incrementais. Inclui o sistema de arquivos da **Etapa 1**, o gerenciamento de armazenamento da **Etapa 2**, os controles de segurança da **Etapa 3**, a memória híbrida da **Etapa 4** e processos, threads e escalonamento da **Etapa 5**.
 
 - **Linguagem:** Python 3.9+ com `cryptography` para criptografia autenticada.
 - **Interfaces:** shell interativo (REPL), scripts de comandos e **interface gráfica (Tkinter) estilo Windows Explorer**
@@ -400,3 +400,68 @@ python3 -m pytest -q
 ```
 
 `tests/test_memory.py` cobre os exemplos de fragmentação, first-fit, isolamento das regiões, tradução com deslocamento, limites da última página, demanda, LRU global, bits e ponteiro da Segunda Chance, preservação de bytes em múltiplas substituições, tamanhos distintos de página/bloco, HDD/SSD/RAID, concorrência com arquivos, migração, compactação do disco, disco cheio, rollback de E/S, encerramento, sessões e relatórios periódicos. `tests/test_gui.py` exercita também os controles do painel, desenho do swap e fechamento por troca de sessão quando há display.
+
+## Etapa 5 — Processos, CPU, syscalls e threads
+
+`osim/processes.py` acrescenta uma CPU lógica ao mesmo `MemoryManager` da Etapa 4. Cada processo escalonado usa o PID, proprietário e alocação de memória existentes. Arquivos, dispositivos físicos, segurança, paginação, LRU/Segunda Chance e swap continuam compartilhados. Os comandos anteriores, inclusive `create_process --name App --size 10KB --type normal`, permanecem disponíveis; processos criados sem `--burst` servem às demonstrações de memória e não entram na fila de CPU.
+
+```bash
+python3 main.py --script examples/10_processos_io.txt --ram-size 24KB --reserved-size 8KB --kernel-size 4KB --blocks 64
+python3 main.py --script examples/11_threads_mutex.txt
+```
+
+### Criação com perfil de E/S e execução incremental
+
+```text
+create_process --name App_Web --burst 8ms --priority 1 --type normal --size 32KB --syscall "read_disk at 3ms (duration: 4ms)"
+create_process --name App_Render --burst 5ms --priority 2 --syscall random --seed 42
+run_simulation --process App_Web --steps 3
+ram_status
+schedule --algorithm Priority_RR --quantum 2ms
+system_metrics
+```
+
+`--burst` informa o trabalho de CPU da thread inicial T1. `--priority` começa em 1 (mais alta), `--type` assume `normal` e o tamanho padrão é quatro páginas. Processos normais usam paginação por demanda; os críticos preservam a alocação contígua na área reservada. O ciclo de vida é **NOVO → PRONTO → EXECUTANDO → BLOQUEADO → PRONTO → … → CONCLUÍDO**; preempções devolvem EXECUTANDO a PRONTO. A criação registra a admissão NOVO → PRONTO.
+
+Uma instrução custa **1 ms**. Uma syscall dispara ao completar o instante de **CPU acumulada do processo**, independentemente das preempções e do tempo global. `read_disk at 3ms (duration: 4ms)` bloqueia ao completar a terceira instrução, com retorno quatro milissegundos globais depois. Instantes devem ser positivos, distintos e menores que o burst inicial. Separe várias syscalls por `;` dentro das mesmas aspas. Operações aceitas: `read_disk`, `write_disk` e `io`. O perfil `random` sorteia uma syscall válida e sua duração (1 a 4 ms), reproduzível por `--seed` (padrão 0); requer burst de pelo menos 2 ms. `none` desativa E/S.
+
+As syscalls simulam eventos e latências de E/S, sem caminho de arquivo associado. As referências a páginas usam de fato a RAM e o swap da Etapa 4; substituições geram operações no HDD/SSD/RAID configurado. A cada instrução de processo normal, uma página lógica válida é sorteada com gerador independente por processo e seed reproduzível. A linha do tempo registra HIT/PAGE FAULT, substituição e moldura física. `ram_status` resume as molduras residentes, o último resultado, o contador LRU e o instante de CPU. O relógio LRU continua sendo o **contador de referências da Etapa 4**, que inclui acessos manuais; a coluna CPU usa milissegundos do escalonador.
+
+`run_simulation --steps N` avança até N milissegundos globais, incluindo ociosidade. `--process` define um alvo para parar quando ele concluir; a execução continua respeitando todas as filas e prioridades. Chamadas sucessivas preservam o quantum restante, as filas, os eventos e os geradores aleatórios. Sem limite de passos, a execução para ao concluir, detectar deadlock ou atingir o limite de 100.000 ms por chamada; é possível continuar depois. `schedule` configura Priority_RR e executa até uma dessas condições. `process_status` e `system_metrics` mostram estados, threads, filas e métricas sem avançar o relógio.
+
+### Prioridades, threads e exclusão mútua
+
+O escalonador seleciona a menor prioridade numérica disponível. Processos do mesmo nível usam filas FIFO com Round-Robin e quantum configurável. Um retorno de E/S com prioridade mais alta preempta a CPU na próxima fronteira de instrução. Não há aging; uma carga contínua de alta prioridade pode atrasar prioridades inferiores.
+
+```text
+create_process --name App_Render --burst 4ms --priority 1
+create_thread --process App_Render --name T2 --burst 3ms
+thread_action --process App_Render --thread T1 --at 0ms --operation lock --mutex Buffer_Video
+thread_action --process App_Render --thread T1 --at 2ms --operation unlock --mutex Buffer_Video
+thread_action --process App_Render --thread T2 --at 0ms --operation lock --mutex Buffer_Video
+schedule --algorithm Priority_RR --quantum 1ms
+```
+
+Configure threads e ações antes da primeira instrução do processo. Cada thread adicional acrescenta seu burst ao trabalho total e compartilha prioridade, memória e perfil de E/S do processo. As threads prontas do processo também se alternam por quantum. `--at` é o número de instruções já executadas **pela thread**, antes da próxima instrução; 0 é válido. Há uma ação por instante. Aquisição/liberação não consome CPU adicional.
+
+Mutexes são globais, não recursivos e usam espera FIFO. Uma tentativa de `lock` em mutex ocupado bloqueia a thread automaticamente e libera a CPU. A liberação transfere a posse à primeira thread em espera. `unlock` por uma thread sem posse é rejeitado; concluir ou encerrar uma thread libera seus mutexes automaticamente. O processo fica BLOQUEADO quando todas as threads vivas aguardam mutex, ou durante sua syscall; outra thread pronta pode continuar se o bloqueio for somente de mutex. Deadlock sem E/S pendente pausa a simulação e é informado no log. `terminate_process` permite remover um participante, liberar seus mutexes e continuar.
+
+### Métricas, memória e segurança
+
+Os relatórios usam os tempos realmente simulados, em ms:
+
+| Métrica | Definição |
+|---|---|
+| WT | Tempo do processo na fila PRONTO; exclui E/S e espera bloqueada por mutex |
+| TAT | Conclusão menos chegada; inclui CPU, WT e bloqueios |
+| Resposta | Primeira instrução menos chegada |
+| AWT / ATT | Médias de WT / TAT somente dos processos concluídos |
+| Trocas de contexto | Mudança de PID ou thread entre instruções executadas; despacho inicial e passagem pelo estado ocioso não acrescentam trocas |
+| Utilização | Tempo ocupado / tempo global simulado × 100 |
+| Vazão | Processos concluídos / tempo global simulado |
+
+O burst total é a soma dos bursts das threads. A contabilidade por processo satisfaz `TAT = WT + CPU + bloqueio`. Processos cancelados não entram nas médias de conclusão. O histórico dos concluídos permanece no relatório após liberar a memória, inclusive ao reutilizar um nome. A memória de processos concluídos fica disponível para inspeção até `terminate_process`, que libera RAM/swap e impede referências pendentes. O disco só pode ser formatado após liberar todos os processos, como na Etapa 4.
+
+A criação de processos normais e a configuração de suas threads respeitam a propriedade da Etapa 3. Execução da CPU, configuração do escalonador, relatórios globais e processos críticos exigem modo kernel. A GUI oferece **Processos > CPU, threads, syscalls e métricas...**, com criação, perfil de E/S, ações de mutex, execução por passos, lotes de até 1000 ms e abas de métricas, RAM e linha do tempo. A troca de sessão fecha esse painel administrativo.
+
+`tests/test_processes.py` verifica linhas do tempo e métricas exatas, prioridades/RR, preempção por retorno de E/S, execução incremental, múltiplas syscalls, seeds, ociosidade, RAM/swap compartilhados, mutex FIFO, liberação explícita/automática, deadlock, encerramento, limites, rollback de referência sem espaço e segurança. Os testes gráficos exercitam criação, execução, concorrência, relatórios e fechamento por sessão.
